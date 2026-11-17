@@ -8,3 +8,6 @@ Thumbs.db
 
 # Gmail sign-in token (created when you connect Gmail)
 .gmail-token.json
+
+.vercel
+.env*

@@ -26,6 +26,17 @@ Photos are shrunk to about 1568 px before they're sent. Then you see a review sc
 
 Items that match a food the recipes use (spinach, tomatoes, chicken, feta, yogurt, eggs) count toward recipes. Other foods show in your list and are sent to the recipe AI, but the 19 catalog recipes don't use them yet.
 
+## Try it online
+
+The app is hosted at **https://fridgefit-orpin.vercel.app**. Anyone can click through it. The real AI is behind a class passcode, so ask the team for it and enter it on the welcome screen. Without the passcode, the app runs with simulated answers.
+
+How the hosted version differs from running it on a laptop:
+
+- **Logs** go to the Vercel dashboard (project **fridgefit**, **Logs** tab) instead of a file, one JSON line per request. Photos aren't saved there.
+- **Settings** live in the Vercel project's **Environment Variables**: `ANTHROPIC_API_KEY`, `APP_PASSCODE` (change it there any time, then redeploy) and `SESSION_SECRET`. For Gmail, also add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, and add `https://fridgefit-orpin.vercel.app/auth/google/callback` as a second redirect URI in Google Cloud.
+- **Deploys** happen automatically when you push to `main` on GitHub. `vercel.json` and `api/index.js` wire it up; the backend is the same `server.js`.
+- **Spending:** every AI request on the hosted version uses the API key's credits. Set a monthly spend limit in the Anthropic Console.
+
 ## Run it on your laptop
 
 You need [Node.js](https://nodejs.org) (the LTS version) and your own Anthropic API key.
