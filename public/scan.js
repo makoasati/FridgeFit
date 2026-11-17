@@ -13,7 +13,7 @@ const GMAIL = { configured: false, connected: false, email: "" };
 
 function refreshGmailStatus() {
   if (!location.protocol.startsWith("http")) return Promise.resolve();
-  return fetch("/api/gmail/status").then((r) => r.json()).then((s) => Object.assign(GMAIL, s)).catch(() => {});
+  return apiFetch("/api/gmail/status").then((r) => r.json()).then((s) => Object.assign(GMAIL, s)).catch(() => {});
 }
 refreshGmailStatus();
 
@@ -169,7 +169,7 @@ async function readScan() {
   Object.assign(s, { stage: "reading", error: "" });
   render();
   try {
-    const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s.image) });
+    const res = await apiFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...s.image, today: localDate() }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     if (s.source === "receipt") {
@@ -246,7 +246,7 @@ function connectGmail() {
 }
 
 async function disconnectGmail() {
-  await fetch("/api/gmail/disconnect", { method: "POST" }).catch(() => {});
+  await apiFetch("/api/gmail/disconnect", { method: "POST" }).catch(() => {});
   await refreshGmailStatus();
   log("Setup", "Disconnected Gmail");
   render();
@@ -257,7 +257,7 @@ async function scanGmail() {
   Object.assign(s, { stage: "reading", error: "" });
   render();
   try {
-    const res = await fetch("/api/gmail/scan", { method: "POST" });
+    const res = await apiFetch("/api/gmail/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ today: localDate() }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     const useful = data.emails.filter((e) => e.lines && e.lines.length);
@@ -458,19 +458,30 @@ screens.scanReview = () => {
 /* --------------------- freshness labels, icons, wording --------------------- */
 
 // Whole days since a purchase date (0 if unknown or in the future)
+// A purchase date as a local calendar day. "2026-11-16" means that day where the user is, not in UTC.
+function parseDay(dateText) {
+  const m = /^(d{4})-(d{2})-(d{2})$/.exec(String(dateText || "").trim());
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(Date.parse(dateText || ""));
+  return isNaN(d) ? null : d;
+}
+
+// Whole calendar days since a purchase date, by the device's clock (0 if unknown or in the future)
 function daysSince(dateText) {
-  const t = Date.parse(dateText || "");
-  if (isNaN(t)) return 0;
-  const days = Math.floor((Date.now() - t) / 86400000);
+  const d = parseDay(dateText);
+  if (!d) return 0;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((today - day) / 86400000);
   return days > 0 ? days : 0;
 }
 
 function shortDate(dateText) {
-  const d = new Date(Date.parse(dateText));
-  if (isNaN(d)) return "";
+  const d = parseDay(dateText);
+  if (!d) return "";
   return daysSince(dateText) > 300
-    ? d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })
-    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+    ? d.toLocaleDateString("en-US", { month: "short", year: "numeric" })
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /* Days left -> the label and urgency the app shows. For receipts and emails, days left is the food's

@@ -16,7 +16,7 @@
 /* =========================== 1. STATE =========================== */
 const state = {
   screen: "welcome",
-  prefs: { cuisines: [], dislikes: [], allergies: [], skill: null, time: null, budget: null },
+  prefs: { cuisines: [], dislikes: [], allergies: [], skill: null, time: null, budget: null, custom: { cuisines: [], allergies: [] } },
   tasteAnswers: {},          // example recipe id -> "yes" | "no"
   quizError: false,
   receiptStage: "preview",   // preview → scanning → scanned
@@ -59,15 +59,49 @@ const state = {
 /* Local backend (server.js). When the app is opened through it, tonight's recipes come from a
    real AI model and every log entry is also saved to logs/ai-log.jsonl. Opened as a plain file,
    everything stays simulated. */
-const BACKEND = { available: false, mode: "simulated", model: null, reason: "" };
-if (location.protocol.startsWith("http")) {
-  fetch("/api/status")
+const BACKEND = { available: false, mode: "simulated", model: null, reason: "", locked: false };
+
+/* Every call to the backend goes through here. On the hosted version the AI is behind a passcode,
+   which the user enters once; it's kept in this browser and sent with each request. */
+function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const code = localStorage.getItem("fridgefitPasscode");
+  if (code) headers["x-fridgefit-passcode"] = code;
+  return fetch(url, { ...options, headers });
+}
+
+function loadBackendStatus() {
+  if (!location.protocol.startsWith("http")) return Promise.resolve();
+  return apiFetch("/api/status")
     .then((r) => r.json())
     .then((s) => {
-      Object.assign(BACKEND, { available: true, mode: s.mode, model: s.model, reason: s.reason || "" });
-      log("AI", s.mode === "real" ? `Real AI is on for tonight's recipes (${s.model})` : `Simulated AI (${s.reason})`);
+      Object.assign(BACKEND, { available: true, mode: s.mode, model: s.model, reason: s.reason || "", locked: !!s.locked });
+      log("AI", s.mode === "real" ? `Real AI is on (${s.model})` : `Simulated AI (${s.reason})`);
+      render();
     })
     .catch(() => {});
+}
+loadBackendStatus();
+
+function unlockWithPasscode() {
+  const input = document.getElementById("passcodeInput");
+  const code = (input ? input.value : "").trim();
+  if (!code) return toast("Type the passcode first.");
+  localStorage.setItem("fridgefitPasscode", code);
+  loadBackendStatus().then(() => { if (BACKEND.locked) toast("That passcode didn't work. Check it and try again."); });
+}
+
+function passcodeCard() {
+  if (!BACKEND.locked) return "";
+  return `
+    <div class="question-card">
+      <div class="q-title">🔒 Real AI is locked</div>
+      <p class="q-text">Enter the class passcode to use the real AI. Without it, the app runs with simulated answers.</p>
+      <div class="answer-row">
+        <input id="passcodeInput" type="password" placeholder="Passcode" onkeydown="if (event.key === 'Enter') unlockWithPasscode()">
+        <button class="btn primary small" onclick="unlockWithPasscode()">Unlock</button>
+      </div>
+    </div>`;
 }
 
 /* ======================== 2. ON-SCREEN LOG ======================== */
@@ -79,7 +113,7 @@ function log(type, message) {
   logEntries.push({ type, message, time });
   renderLog();
   if (BACKEND.available) {
-    fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, message }) }).catch(() => {});
+    apiFetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, message }) }).catch(() => {});
   }
 }
 
@@ -127,8 +161,7 @@ const AI = {
 
   /* Recipes never include the user's allergens (or disliked ingredients) */
   isAllowed(recipe) {
-    const allergens = recipeAllergens(recipe);
-    if (allergens.some((a) => state.prefs.allergies.includes(a))) return false;
+    if (state.prefs.allergies.some((a) => allergyHits(a, recipe.ingredients))) return false;
     if ((recipe.dislikeTags || []).some((d) => state.prefs.dislikes.includes(d))) return false;
     return true;
   },
@@ -141,7 +174,7 @@ const AI = {
       const r = SIM.recipes[id];
       const uses = r.ingredients.map((i) => inventoryItem(i.invId)).filter(Boolean);
       let s = uses.reduce((sum, item) => sum + urgencyScore[item.urgency], 0) + r.predictedRating;
-      if (p.cuisines.includes(r.cuisine)) s += 1.5;                       // cuisines they like
+      if (likesCuisine(r.cuisine)) s += 1.5;                              // cuisines they like
       SIM.exampleRecipes.filter((e) => e.cuisine === r.cuisine).forEach((e) => {
         if (state.tasteAnswers[e.id] === "yes") s += 0.5;                 // Yes / No on example recipes
         if (state.tasteAnswers[e.id] === "no") s -= 0.5;
@@ -171,7 +204,7 @@ const AI = {
     }
     return ids.map((id) => {
       const r = SIM.recipes[id];
-      const liked = !exampleProfile && p.cuisines.includes(r.cuisine);
+      const liked = !exampleProfile && likesCuisine(r.cuisine);
       return { recipeId: id, reason: liked ? `Because you liked ${r.cuisine} dishes. ${r.reason}` : r.reason };
     });
   },
@@ -195,7 +228,7 @@ const AI = {
   /* Substitutes for an ingredient. Options with the user's allergens are never offered. */
   swapOptions(ingKey) {
     const all = SIM.swaps[ingKey] || [{ name: "Leave it out", invId: null, allergens: [], note: "Skip it" }];
-    const blocked = (o) => (o.allergens || []).some((a) => state.prefs.allergies.includes(a)) ||
+    const blocked = (o) => state.prefs.allergies.some((a) => allergyHits(a, [o])) ||
       state.prefs.dislikes.some((d) => o.name.toLowerCase().includes(d.toLowerCase()));
     return { allowed: all.filter((o) => !blocked(o)), hidden: all.filter(blocked) };
   },
@@ -302,7 +335,8 @@ function toast(message) {
 }
 
 function chip(label, selected, onclick, extraClass = "") {
-  return `<button class="chip ${selected ? "selected" : ""} ${extraClass}" onclick="${onclick}">${selected ? "✓ " : ""}${escapeHtml(label)}</button>`;
+  const check = selected && !extraClass.includes("no-check") ? "✓ " : "";
+  return `<button class="chip ${selected ? "selected" : ""} ${extraClass}" onclick="${onclick}">${check}${escapeHtml(label)}</button>`;
 }
 
 function expectationCard(which) {
@@ -348,7 +382,7 @@ function currentIngredients(recipeId) {
 
 /* Tonight's time: the spec's 25 minutes, or less if they said they only have 15 on weeknights */
 function minutesTonight() {
-  return state.prefs.time === "15 min" ? 15 : SIM.context.minutesTonight;
+  return { "15 min": 15, "30 min": 30, "45+ min": 45 }[state.prefs.time] || SIM.context.minutesTonight;
 }
 
 /* Main ingredients a recipe needs that the user marked spoiled, missing, or removed */
@@ -380,6 +414,55 @@ function recipeAllergens(recipe) {
   return [...new Set(recipe.ingredients.flatMap((i) => i.allergens || []))];
 }
 
+/* Allergy rules. A recipe or swap is blocked if an ingredient carries the allergen tag, or if its name
+   contains one of the words below. Written-in allergies (for example "Kiwi") match by name. */
+const ALLERGY_RULES = {
+  Celery: { words: /celery/i },
+  Coconut: { words: /coconut/i },
+  Corn: { words: /\bcorn\b|tortilla|polenta|cornmeal/i },
+  Dairy: { tags: ["Dairy"], words: /(?<!coconut |oat |almond |soy )milk|cheese|feta|yog(h)?urt|(?<!peanut |nut |almond )butter|cream|paneer|ghee|mozzarella|parmesan/i },
+  Eggs: { tags: ["Eggs"], words: /\beggs?\b/i },
+  Fish: { tags: ["Fish"], words: /\bfish|salmon|tuna|\bcod\b|anchov|sardine|tilapia/i },
+  Gluten: { tags: ["Gluten"], words: /flour|bread|pasta|noodle|spaghetti|orzo|couscous|pita|naan|wheat|barley|soy sauce/i },
+  Mustard: { words: /mustard/i },
+  Peanuts: { tags: ["Peanuts"], words: /peanut/i },
+  Sesame: { tags: ["Sesame"], words: /sesame|tahini/i },
+  Shellfish: { tags: ["Shellfish"], words: /shrimp|prawn|crab|lobster|clam|mussel|scallop|oyster/i },
+  Soy: { tags: ["Soy"], words: /\bsoy|tofu|edamame|miso|tempeh/i },
+  Sulfites: { words: /wine|vinegar|dried fruit|raisin/i },
+  "Tree nuts": { tags: ["Tree nuts"], words: /almond|cashew|walnut|pecan|pistachio|hazelnut|pine nut/i },
+  Wheat: { tags: ["Gluten"], words: /flour|bread|pasta|noodle|spaghetti|orzo|couscous|pita|naan|wheat|soy sauce/i },
+};
+
+function allergyHits(allergy, ingredients) {
+  if (/^No allergies$/i.test(allergy)) return false;
+  const rule = ALLERGY_RULES[allergy] || { words: new RegExp(allergy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") };
+  return ingredients.some((i) => (rule.tags || []).some((t) => (i.allergens || []).includes(t)) || (rule.words && rule.words.test(i.name || "")));
+}
+
+/* Allergens in a recipe, by the rules above: what the recipe AI is told about each recipe */
+function recipeAllergyList(recipe) {
+  const custom = state.prefs.allergies.filter((a) => !ALLERGY_RULES[a] && a !== "No allergies");
+  return [...Object.keys(ALLERGY_RULES), ...custom].filter((a) => allergyHits(a, recipe.ingredients));
+}
+
+/* Specific cuisines count toward the broader one the recipe catalog uses */
+const CUISINE_FAMILY = { Chinese: "Asian", Japanese: "Asian", Korean: "Asian", Thai: "Asian", Vietnamese: "Asian", Greek: "Mediterranean", Spanish: "Mediterranean" };
+function likesCuisine(cuisine) {
+  return state.prefs.cuisines.some((c) => c === cuisine || CUISINE_FAMILY[c] === cuisine);
+}
+
+/* Today's weekday from the device's clock */
+function todayName() {
+  return new Date().toLocaleDateString("en-US", { weekday: "long" });
+}
+
+/* Today's date on the device, as YYYY-MM-DD in local time (not UTC) */
+function localDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /* Simple rule for grocery match %: share of main ingredients you have, minus 10 per missing optional one.
    Pantry staples always count as on hand; ingredients left out don't count. */
 function matchPercent(recipeId) {
@@ -398,7 +481,7 @@ function expiringNames() {
 /* Replace the home list and log every recipe shown, with its context */
 function showRecipes(list, { mode, title, subtitle, why }) {
   Object.assign(state.home, { list, mode, title, subtitle, highlight: null });
-  const ctx = `${SIM.context.day}, ${minutesTonight()} min tonight, expiring soon: ${expiringNames().join(", ") || "none"}`;
+  const ctx = `${todayName()}, ${minutesTonight()} min tonight, expiring soon: ${expiringNames().join(", ") || "none"}`;
   const cards = list.map((e) => {
     const r = SIM.recipes[e.recipeId];
     return `${r.name} (${matchPercent(e.recipeId)}% match, ${r.minutes} min, predicted ${r.predictedRating}; reason: “${displayReason(e)}”)`;
@@ -423,6 +506,7 @@ screens.welcome = () => `
     <p class="lead">Recipes you'll actually want to make from what you already have, starting with what's about to go bad.</p>
     <h3 class="section-label">Before we start</h3>
     ${expectationCard("both")}
+    ${passcodeCard()}
     <p class="muted center">Setup takes about 2 minutes and only happens once.</p>
     <button class="btn primary block" onclick="startSetup()">Get started</button>
   </div>`;
@@ -431,24 +515,38 @@ screens.welcome = () => `
 screens.quizPrefs = () => {
   const p = state.prefs;
   const q = SIM.quiz;
+  const quote = (o) => o.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;");
   const multi = (field, options) =>
-    options.map((o) => chip(o, p[field].includes(o), `toggleMulti('${field}', '${o}')`)).join("");
-  const single = (field, options) =>
-    options.map((o) => chip(o, p[field] === o, `pickSingle('${field}', '${o}')`)).join("");
+    options.map((o) => chip(o, p[field].includes(o), `toggleMulti('${field}', '${quote(o)}')`)).join("");
+  const single = (field, options, cls = "") =>
+    options.map((o) => chip(o, p[field] === o, `pickSingle('${field}', '${quote(o)}')`, cls)).join("");
+  // Built-in options plus anything the user wrote in, in alphabetical order. "No allergies" stays last.
+  const sorted = (field) => {
+    const none = { allergies: "No allergies", dislikes: "No dislikes" }[field];
+    const all = [...new Set([...q[field], ...(p.custom[field] || [])])].filter((o) => o !== none);
+    return all.sort((a, b) => a.localeCompare(b)).concat(none ? [none] : []);
+  };
+  const writeIn = (field, placeholder) => `
+    <div class="write-in">
+      <input id="writeIn-${field}" placeholder="${placeholder}" onkeydown="if (event.key === 'Enter') addWriteIn('${field}')">
+      <button class="btn ghost small" onclick="addWriteIn('${field}')">Add</button>
+    </div>`;
   return `
     ${setupProgress(1)}
     <h2>Tell us your preferences</h2>
     <p class="muted">Tap all that apply. You can change these later.</p>
 
-    <div class="quiz-block"><h4>🍽️ Cuisines you like</h4><div class="chips">${multi("cuisines", q.cuisines)}</div></div>
+    <div class="quiz-block"><h4>🍽️ Cuisines you like</h4><div class="chips">${multi("cuisines", sorted("cuisines"))}</div>
+      ${writeIn("cuisines", "Another cuisine? Type it")}</div>
     <div class="quiz-block"><h4>🙅 Dislikes</h4><div class="chips">${multi("dislikes", q.dislikes)}</div></div>
     <div class="quiz-block allergy ${state.quizError ? "error" : ""}" id="allergyBlock">
       <h4>⚠️ Allergies <span class="required">Required</span></h4>
       <p class="hint">Recipes, swaps, and substitutions will never include these.</p>
-      <div class="chips">${multi("allergies", q.allergies)}</div>
+      <div class="chips">${multi("allergies", sorted("allergies"))}</div>
+      ${writeIn("allergies", "Another allergy? Type it")}
       ${state.quizError ? `<p class="error-text">Please choose your allergies, or “No allergies”, to continue.</p>` : ""}
     </div>
-    <div class="quiz-block"><h4>👩‍🍳 Cooking skill</h4><div class="chips">${single("skill", q.skills)}</div></div>
+    <div class="quiz-block"><h4>👩‍🍳 Cooking skill</h4><div class="chips one-line">${single("skill", q.skills, "no-check")}</div></div>
     <div class="quiz-block"><h4>⏱️ Time on weeknights</h4><div class="chips">${single("time", q.times)}</div></div>
     <div class="quiz-block"><h4>💵 Weekly food budget</h4><div class="chips">${single("budget", q.budgets)}</div></div>
 
@@ -711,7 +809,7 @@ screens.home = () => {
   return `
     <div class="greeting">
       <div><h2>Hi! What's for dinner?</h2>
-      <p class="muted">${SIM.context.day} · ${minutesTonight()} min tonight</p></div>
+      <p class="muted">${todayName()} · ${minutesTonight()} min tonight</p></div>
     </div>
     <form class="search" onsubmit="event.preventDefault(); runSearch()">
       <span>🔍</span>
@@ -975,6 +1073,20 @@ function toggleMulti(field, value) {
   render();
 }
 
+/* Write in a cuisine or allergy that isn't on the list. It's added as a chip and selected. */
+function addWriteIn(field) {
+  const input = document.getElementById(`writeIn-${field}`);
+  const raw = (input ? input.value : "").trim().replace(/\s+/g, " ");
+  if (!raw) return toast("Type it first, then tap Add.");
+  const value = raw.charAt(0).toUpperCase() + raw.slice(1);
+  const existing = [...SIM.quiz[field], ...(state.prefs.custom[field] || [])].find((o) => o.toLowerCase() === value.toLowerCase());
+  const name = existing || value;
+  if (!existing) state.prefs.custom[field] = [...(state.prefs.custom[field] || []), name];
+  if (!state.prefs[field].includes(name)) toggleMulti(field, name);
+  log("Setup", `Wrote in ${field === "allergies" ? "an allergy" : "a cuisine"}: ${name}`);
+  render();
+}
+
 function pickSingle(field, value) {
   state.prefs[field] = state.prefs[field] === value ? null : value;
   render();
@@ -1105,7 +1217,7 @@ function tonightInput() {
   const p = state.prefs;
   const hidden = [...state.saved, ...state.rejected];
   return {
-    tonight: { day: SIM.context.day, minutesAvailable: minutesTonight() },
+    tonight: { day: todayName(), minutesAvailable: minutesTonight() },
     preferences: { cuisines: p.cuisines, dislikes: p.dislikes, allergies: p.allergies, skill: p.skill, weeknightTime: p.time, budget: p.budget },
     tasteAnswers: SIM.exampleRecipes.filter((r) => state.tasteAnswers[r.id])
       .map((r) => ({ dish: r.name, cuisine: r.cuisine, answer: state.tasteAnswers[r.id] })),
@@ -1120,7 +1232,7 @@ function tonightInput() {
       steps: r.stepCount,
       usesYourPerishables: [...new Set(r.ingredients.map((i) => inventoryItem(i.invId)).filter(Boolean).map((item) => item.name))],
       wouldNeedToBuy: r.ingredients.filter((i) => !i.pantry && !inventoryItem(i.invId)).map((i) => i.name + (i.optional ? " (optional)" : "")),
-      allergens: recipeAllergens(r),
+      allergens: recipeAllergyList(r),
       contains: r.dislikeTags || [],
     })),
   };
@@ -1129,7 +1241,7 @@ function tonightInput() {
 /* Ask the backend, then check the answer before showing it: known recipe ids only, no allergens or
    dislikes, nothing already saved or rejected, no repeats. Top up with simulated picks if fewer than 3 survive. */
 async function realTonight() {
-  const res = await fetch("/api/tonight", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(tonightInput()) });
+  const res = await apiFetch("/api/tonight", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(tonightInput()) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   const ok = (id) => SIM.recipes[id] && AI.isAllowed(SIM.recipes[id]) && !state.saved.includes(id) && !state.rejected.includes(id);

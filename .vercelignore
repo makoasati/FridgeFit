@@ -1,0 +1,6 @@
+.env
+.gmail-token.json
+logs
+node_modules
+docs
+*.zip

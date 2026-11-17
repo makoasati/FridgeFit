@@ -460,3 +460,9 @@ textarea { font: inherit; font-size: 14px; border: 1.5px solid var(--line); bord
 /* ---------- Groceries hub ---------- */
 .option-card.is-done { border-color: var(--green); background: #f6fbf3; }
 .badge.done { background: var(--green); color: #fff; }
+
+/* ---------- Quiz: write-ins and one-line chips ---------- */
+.write-in { display: flex; gap: 8px; margin-top: 10px; }
+.write-in input { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; background: #fff; }
+.chips.one-line { flex-wrap: nowrap; }
+.chips.one-line .chip { flex: 1 1 0; min-width: 0; padding-left: 6px; padding-right: 6px; text-align: center; white-space: nowrap; }

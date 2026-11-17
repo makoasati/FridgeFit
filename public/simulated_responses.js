@@ -18,9 +18,12 @@ window.SIM = {
 
   /* ---------- Step 1: onboarding quiz options ---------- */
   quiz: {
-    cuisines: ["Mediterranean", "Italian", "Mexican", "Indian", "Asian", "Middle Eastern", "American"],
+    // Shown in alphabetical order; users can also write in their own
+    cuisines: ["American", "Asian", "Caribbean", "Chinese", "Ethiopian", "French", "Greek", "Indian", "Italian", "Japanese",
+      "Korean", "Mediterranean", "Mexican", "Middle Eastern", "Spanish", "Thai", "Vietnamese"],
     dislikes: ["Mushrooms", "Olives", "Cilantro", "Tofu", "Very spicy food", "No dislikes"],
-    allergies: ["Peanuts", "Tree nuts", "Dairy", "Eggs", "Gluten", "Shellfish", "Fish", "Soy", "No allergies"],
+    allergies: ["Celery", "Coconut", "Corn", "Dairy", "Eggs", "Fish", "Gluten", "Mustard", "Peanuts", "Sesame", "Shellfish",
+      "Soy", "Sulfites", "Tree nuts", "Wheat", "No allergies"],
     skills: ["Beginner", "Comfortable", "Confident"],
     times: ["15 min", "30 min", "45+ min"],
     budgets: ["Under $50 / week", "$50–$100 / week", "$100+ / week"],

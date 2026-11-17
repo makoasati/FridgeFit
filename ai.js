@@ -44,7 +44,8 @@ async function callWithTool(request, toolName, config) {
   return result;
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+// The user's date comes from their device when it's sent; otherwise the server's local date
+const today = () => new Date().toLocaleDateString("en-CA");
 
 // The fields every detected food item has, whether it came from a photo, a receipt or an email.
 // Freshness comes back as whole numbers of days. The app turns them into the label the user sees,
@@ -262,9 +263,9 @@ export async function readReceipt(source, config) {
   const content = source.image
     ? [
         { type: "image", source: { type: "base64", media_type: source.image.mediaType, data: source.image.data } },
-        { type: "text", text: `Today is ${today()}. Read this receipt photo with the report_receipt tool.` },
+        { type: "text", text: `Today is ${source.today || today()}. Read this receipt photo with the report_receipt tool.` },
       ]
-    : `Today is ${today()}. This is the text of an email that may be a grocery receipt or order.\n\nFrom: ${source.from}\nDate: ${source.date}\nSubject: ${source.subject}\n\n${source.text}\n\nRead it with the report_receipt tool.`;
+    : `Today is ${source.today || today()}. This is the text of an email that may be a grocery receipt or order.\n\nFrom: ${source.from}\nDate: ${source.date}\nSubject: ${source.subject}\n\n${source.text}\n\nRead it with the report_receipt tool.`;
   const request = {
     model: config.photoModel || config.model,
     max_tokens: config.maxTokens ?? 16000,
