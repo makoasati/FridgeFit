@@ -18,3 +18,13 @@ Unless a case says otherwise, use the sample receipt, answer Yes to "Is 'TJ ORG 
 - Did the reasons say anything untrue about the food or dates?
 - Did the guardrail have to remove anything? (Check the log for "Guardrail removed".)
 - How long did it take? (`latencyMs` in the log)
+
+## Fridge photo checks
+
+These cover the second AI step (reading a fridge photo). Start from "Add your groceries" and choose **Snap your fridge**.
+
+| Photo | What a good output looks like |
+|---|---|
+| `docs/test-photos/sample-fridge.png` (drawn test fridge) | Lists eggs, feta, chicken thighs, baby spinach, cherry tomatoes, a bell pepper and a lemon, and matches the first five to the foods the recipes know. Skips the milk (a drink). The takeout box shows up as leftovers with medium or low confidence, or under "couldn't tell". The closed drawer goes under "couldn't tell". Chicken and spinach get the shortest freshness ranges. |
+| A real photo of your own fridge, door wide open, good light | Every clearly visible perishable is listed. Nothing is listed that isn't in the photo. Items that are partly hidden say medium or low confidence. Freshness is always a range. |
+| A dark, blurry or non-fridge photo | No food is invented. The app says what's wrong with the photo and asks for another one. |

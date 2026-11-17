@@ -1,8 +1,51 @@
-// The one real AI step in FridgeFit: pick tonight's recipes.
+// The real AI steps in FridgeFit:
+//   1. pickTonightRecipes: choose tonight's 3 recipes and write the reason on each card
+//   2. detectFridgeItems: list the perishables visible in a fridge photo
 // Everything else in the app stays simulated (see public/simulated_responses.js).
 import Anthropic from "@anthropic-ai/sdk";
 
-export const SYSTEM_PROMPT = `You pick tonight's dinner recipes inside FridgeFit, an app that helps busy people cook with what they already have, starting with food that is about to go bad.
+// The food ids the recipe catalog knows about. Photo items that match one of these can be used by recipes.
+export const KNOWN_ITEMS = ["spinach", "tomatoes", "chicken", "feta", "yogurt", "eggs"];
+
+/* ------------------------------ shared ------------------------------ */
+
+// Sends one request that should end with a call to `toolName`, and returns that call's input.
+async function callWithTool(request, toolName, config) {
+  if (config.provider !== "anthropic") {
+    throw new Error(`Provider "${config.provider}" isn't set up yet. Only "anthropic" is supported.`);
+  }
+  // Server-side fallback re-runs a declined request on another model. Haiku has no fallback.
+  if (config.fallbacks && !request.model.startsWith("claude-haiku")) {
+    request.betas = ["server-side-fallback-2026-07-01"];
+    request.fallbacks = config.fallbacks;
+  }
+
+  const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment (.env)
+  const response = await client.beta.messages.create(request);
+
+  const result = {
+    request,
+    model: response.model,
+    stopReason: response.stop_reason,
+    usage: response.usage,
+    content: response.content,
+  };
+  if (response.stop_reason === "refusal") {
+    const why = response.stop_details ? ` (${response.stop_details.category}: ${response.stop_details.explanation})` : "";
+    throw Object.assign(new Error(`The model declined the request${why}.`), { result });
+  }
+  if (response.stop_reason === "max_tokens") {
+    throw Object.assign(new Error("The model ran out of output tokens before finishing."), { result });
+  }
+  const call = response.content.find((b) => b.type === "tool_use" && b.name === toolName);
+  if (!call) throw Object.assign(new Error(`The model answered without calling ${toolName}.`), { result });
+  result.toolInput = call.input;
+  return result;
+}
+
+/* ------------------------- 1. tonight's recipes ------------------------- */
+
+export const TONIGHT_PROMPT = `You pick tonight's dinner recipes inside FridgeFit, an app that helps busy people cook with what they already have, starting with food that is about to go bad.
 
 You get the user's perishables (with estimated freshness), their quiz answers, the example dishes they said Yes or No to, and a catalog of recipes. Each catalog recipe lists which of the user's perishables it uses, what the user would still need to buy, and its allergens.
 
@@ -43,56 +86,99 @@ function suggestTool(recipeIds) {
   };
 }
 
-function userMessage(input) {
-  return `Here is tonight's situation for this user, as JSON:\n\n${JSON.stringify(input, null, 2)}\n\nPick 3 recipes from the catalog and return them with the suggest_recipes tool.`;
-}
-
-// Builds the request, calls the model, and returns the picks plus what to log.
-// config comes from config.json, so the model can be switched without touching code.
 export async function pickTonightRecipes(input, config) {
-  if (config.provider !== "anthropic") {
-    throw new Error(`Provider "${config.provider}" isn't set up yet. Only "anthropic" is supported.`);
-  }
   const recipeIds = (input.catalog || []).map((r) => r.id);
   if (recipeIds.length < 3) throw new Error("The catalog sent to the AI has fewer than 3 recipes.");
-
   const request = {
     model: config.model,
     max_tokens: config.maxTokens ?? 16000,
     output_config: { effort: config.effort ?? "low" },
-    system: SYSTEM_PROMPT,
+    system: TONIGHT_PROMPT,
     tools: [suggestTool(recipeIds)],
     tool_choice: { type: "auto" },
-    messages: [{ role: "user", content: userMessage(input) }],
+    messages: [{
+      role: "user",
+      content: `Here is tonight's situation for this user, as JSON:\n\n${JSON.stringify(input, null, 2)}\n\nPick 3 recipes from the catalog and return them with the suggest_recipes tool.`,
+    }],
   };
-  // Server-side fallback re-runs a declined request on another model. Haiku has no fallback.
-  if (config.fallbacks && !config.model.startsWith("claude-haiku")) {
-    request.betas = ["server-side-fallback-2026-07-01"];
-    request.fallbacks = config.fallbacks;
+  const result = await callWithTool(request, "suggest_recipes", config);
+  if (!Array.isArray(result.toolInput?.picks)) {
+    throw Object.assign(new Error("The model's answer had no list of picks."), { result });
   }
+  result.picks = result.toolInput.picks.map((p) => ({ recipeId: String(p.recipeId), reason: String(p.reason) }));
+  return result;
+}
 
-  const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment (.env)
-  const response = await client.beta.messages.create(request);
+/* --------------------------- 2. fridge photo --------------------------- */
 
-  const result = {
-    request,
-    model: response.model,
-    stopReason: response.stop_reason,
-    usage: response.usage,
-    content: response.content,
+export const FRIDGE_PROMPT = `You look at a photo of the inside of someone's fridge for FridgeFit, an app that suggests recipes from what people already have, starting with food that is about to go bad.
+
+List the perishable food you can see: produce, meat, fish, dairy, eggs, tofu and leftovers. Skip drinks, condiments, sauces, jams and anything shelf-stable. Only list what you can actually see. Don't guess at what might be behind other things or inside closed drawers.
+
+For each item:
+- name: what it is, in plain words, as specific as the photo allows (for example "Baby spinach" or "Bell peppers").
+- matchesKnownItem: use one of these if it is clearly that food, otherwise "none": spinach (baby spinach or other loose leafy greens like it), tomatoes (fresh tomatoes, including cherry tomatoes), chicken (raw chicken), feta, yogurt, eggs.
+- category: Produce, Meat (including fish), Dairy (including eggs) or Other.
+- amount: a rough amount, for example "1 bag", "about 6" or "half a tub".
+- freshness: a rough estimate written as "Estimated: use within N to M days", from how it looks and its usual fridge life. It is a guess from a photo, so keep ranges honest and never say food is safe.
+- urgency: urgent (about 1 to 2 days), soon (about 2 to 4 days), week (about 5 to 10 days) or long (more than 10 days).
+- confidence: high when the item is clearly visible and easy to identify, medium when it is partly hidden or the label is hard to read, low when you are unsure.
+
+Put things you can see but cannot identify in unclear, as short descriptions like "a foil-covered dish on the top shelf". If the photo is not a fridge, or is too dark or blurry to read, return no items and say what is wrong in photoProblem. Otherwise leave photoProblem empty. Answer by calling the report_fridge_items tool.`;
+
+const fridgeTool = {
+  name: "report_fridge_items",
+  description: "Report the perishable food visible in the fridge photo.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            matchesKnownItem: { type: "string", enum: [...KNOWN_ITEMS, "none"] },
+            category: { type: "string", enum: ["Produce", "Meat", "Dairy", "Other"] },
+            amount: { type: "string" },
+            freshness: { type: "string" },
+            urgency: { type: "string", enum: ["urgent", "soon", "week", "long"] },
+            confidence: { type: "string", enum: ["high", "medium", "low"] },
+          },
+          required: ["name", "matchesKnownItem", "category", "amount", "freshness", "urgency", "confidence"],
+          additionalProperties: false,
+        },
+      },
+      unclear: { type: "array", items: { type: "string" } },
+      photoProblem: { type: "string" },
+    },
+    required: ["items", "unclear", "photoProblem"],
+    additionalProperties: false,
+  },
+};
+
+// image: { mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif", data: base64 string }
+export async function detectFridgeItems(image, config) {
+  const request = {
+    model: config.photoModel || config.model,
+    max_tokens: config.maxTokens ?? 16000,
+    output_config: { effort: config.photoEffort || config.effort || "low" },
+    system: FRIDGE_PROMPT,
+    tools: [fridgeTool],
+    tool_choice: { type: "auto" },
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
+        { type: "text", text: "List the perishable food in this fridge photo with the report_fridge_items tool." },
+      ],
+    }],
   };
-
-  if (response.stop_reason === "refusal") {
-    const why = response.stop_details ? ` (${response.stop_details.category}: ${response.stop_details.explanation})` : "";
-    throw Object.assign(new Error(`The model declined the request${why}.`), { result });
-  }
-  if (response.stop_reason === "max_tokens") {
-    throw Object.assign(new Error("The model ran out of output tokens before finishing."), { result });
-  }
-  const call = response.content.find((b) => b.type === "tool_use" && b.name === "suggest_recipes");
-  if (!call || !Array.isArray(call.input?.picks)) {
-    throw Object.assign(new Error("The model answered without calling suggest_recipes."), { result });
-  }
-  result.picks = call.input.picks.map((p) => ({ recipeId: String(p.recipeId), reason: String(p.reason) }));
+  const result = await callWithTool(request, "report_fridge_items", config);
+  const out = result.toolInput || {};
+  result.items = Array.isArray(out.items) ? out.items : [];
+  result.unclear = Array.isArray(out.unclear) ? out.unclear.map(String) : [];
+  result.photoProblem = String(out.photoProblem || "");
   return result;
 }

@@ -9,9 +9,12 @@ FridgeFit is a clickable prototype built for 43120 Building an AI Company at Chi
 | Step | Status |
 |---|---|
 | Tonight's recipes (which 3 recipes to show, and the reason on each card) | **Real AI**: a Claude model through the Anthropic API |
-| Reading the receipt, freshness estimates, swaps, replacements after feedback, progress numbers | Simulated: pre-written answers in `public/simulated_responses.js` |
+| Fridge photo (list the perishables in a photo, with a rough freshness guess and a confidence level for each) | **Real AI**: the same Claude model, reading the image |
+| Reading the receipt, swaps, replacements after feedback, progress numbers | Simulated: pre-written answers in `public/simulated_responses.js` |
 
 The real AI picks from the app's catalog of 19 recipes, so the rest of the app (ingredient checks, swaps, the freshness check, cooking steps) keeps working. Two rules run in code after the AI answers, whatever the model says. Recipes with your allergies or dislikes are removed, and so are unknown or repeated recipes. If fewer than 3 picks survive, simulated picks fill the gap. If the AI can't be reached, the app shows simulated backup picks and says so.
+
+**Fridge photo.** On the "Add your groceries" step, choose **Snap your fridge**. On a phone this opens the camera, and on a laptop it opens a file picker. The photo is shrunk to about 1568 px before it's sent. The model lists the perishables it can see and what it can't identify, and everything goes to the perishables screen for you to confirm, correct or remove. You can also add anything it missed with **Add an item**. Photo items that match a food the recipes use (spinach, tomatoes, chicken, feta, yogurt, eggs) count toward recipes. Other foods show in your list and are sent to the recipe AI, but the 19 catalog recipes don't use them yet. You can use a photo instead of the receipt or as well as it.
 
 ## Run it on your laptop
 
@@ -41,31 +44,35 @@ Everything is in `config.json`. Changes apply on the next request, without resta
 | `model` | Which Claude model to use, for example `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5` (cheapest) |
 | `effort` | How hard the model thinks: `low`, `medium` or `high` |
 | `fallbacks` | `"default"` lets the API retry on another model if the request is declined. Ignored for Haiku |
+| `photoModel`, `photoEffort` | Optional. Use a different model or effort for the fridge photo only. If left out, the photo uses `model` and `effort` |
 
-The AI call itself is one function, `pickTonightRecipes` in `ai.js`. The instructions the model gets are at the top of that file.
+Each AI step is one function in `ai.js`: `pickTonightRecipes` and `detectFridgeItems`. The instructions each model gets are written out in the same file.
 
 ## See what the AI did
 
 Every AI request is saved to `logs/ai-log.jsonl`, one entry per line. It records the full instructions and inputs sent, the answer, how long it took, the tokens used and any errors. Every tap in the app is saved there too, including "Not quite right?" reasons, freshness checks and next-day answers.
 
-For a readable view, open http://localhost:3000/log while the app is running. The `logs` folder stays on your laptop and is never uploaded.
+Each fridge photo is saved to `logs/images`, and its log entry points to the file, so you can see exactly what the AI looked at.
+
+For a readable view, open http://localhost:3000/log while the app is running. Photos show next to their entries. The `logs` folder stays on your laptop and is never uploaded.
 
 ## Testing
 
-`docs/test-cases.md` has five test cases for class: two typical, one edge case and two failure cases. Each one says how to set it up in the app and what a good answer looks like.
+`docs/test-cases.md` has five test cases for class: two typical, one edge case and two failure cases. Each one says how to set it up in the app and what a good answer looks like. It also has a few checks for the fridge photo, using `docs/test-photos/sample-fridge.png` and your own photos.
 
 ## What's in the repo
 
 | Path | What it is |
 |---|---|
 | `public/` | The app: `index.html`, `app.js` (screens and logic), `simulated_responses.js` (pretend AI answers), `styles.css` |
-| `ai.js` | The real AI step: prompt, tool schema and model call |
+| `ai.js` | The real AI steps: prompts, tool schemas and model calls |
 | `server.js` | Small local backend. It serves the app, keeps the key on your laptop, calls the AI and writes the log |
 | `config.json` | Model and switches |
 | `.env.example` | Template for your own `.env` (the real `.env` is never committed) |
 | `docs/assignments/` | Project assignments 2 to 4 |
 | `docs/design/` | Storyboard and annotated app screens |
-| `docs/test-cases.md` | Test cases for the AI step |
+| `docs/test-cases.md` | Test cases for the AI steps |
+| `docs/test-photos/` | A sample fridge photo for testing the photo step |
 
 ## Keep your key safe
 

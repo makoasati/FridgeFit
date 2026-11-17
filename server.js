@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
-import { pickTonightRecipes } from "./ai.js";
+import { pickTonightRecipes, detectFridgeItems } from "./ai.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const envFile = path.join(here, ".env");
@@ -15,6 +15,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(here, "public");
 const LOG_DIR = path.join(here, "logs");
 const LOG_FILE = path.join(LOG_DIR, "ai-log.jsonl");
+const IMAGE_DIR = path.join(LOG_DIR, "images");
+const IMAGE_TYPES = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
 
 // Read on every request, so you can switch models or the simulated switch without restarting.
 function readConfig() {
@@ -43,12 +45,12 @@ function sendJson(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req) {
+function readBody(req, limit = 2_000_000) {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 2_000_000) reject(new Error("Request too large"));
+      if (data.length > limit) reject(new Error("Request too large"));
     });
     req.on("end", () => {
       try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(new Error("Body is not valid JSON")); }
@@ -103,6 +105,63 @@ async function handleTonight(req, res) {
   }
 }
 
+// The photo is saved to logs/images so you can see exactly what the AI looked at.
+// The log entry points to the file instead of storing the (large) image data.
+async function handleFridge(req, res) {
+  const config = readConfig();
+  const body = await readBody(req, 15_000_000);
+  const ext = IMAGE_TYPES[body.mediaType];
+  if (!ext || typeof body.data !== "string" || !body.data.length) {
+    return sendJson(res, 400, { error: "Send a JPEG, PNG, WebP or GIF photo." });
+  }
+  fs.mkdirSync(IMAGE_DIR, { recursive: true });
+  const imageFile = `fridge-${new Date().toISOString().replace(/[:.]/g, "-")}${ext}`;
+  fs.writeFileSync(path.join(IMAGE_DIR, imageFile), Buffer.from(body.data, "base64"));
+  const imageNote = `[photo saved to logs/images/${imageFile}, ${Math.round((body.data.length * 3) / 4 / 1024)} KB]`;
+  const withoutImageData = (request) => JSON.parse(JSON.stringify(request, (key, value) => (key === "data" ? imageNote : value)));
+
+  const started = Date.now();
+  try {
+    const result = await detectFridgeItems({ mediaType: body.mediaType, data: body.data }, config);
+    writeLog({
+      type: "ai_request",
+      step: "fridge_photo",
+      provider: config.provider,
+      model: result.model,
+      latencyMs: Date.now() - started,
+      imageFile,
+      request: withoutImageData(result.request),
+      output: { items: result.items, unclear: result.unclear, photoProblem: result.photoProblem, stopReason: result.stopReason, content: result.content },
+      confidence: "per item: high, medium or low (the model's own rating, not a probability)",
+      usage: result.usage,
+    });
+    sendJson(res, 200, { items: result.items, unclear: result.unclear, photoProblem: result.photoProblem, model: result.model });
+  } catch (error) {
+    const message = explainError(error);
+    writeLog({
+      type: "ai_error",
+      step: "fridge_photo",
+      provider: config.provider,
+      model: config.photoModel || config.model,
+      latencyMs: Date.now() - started,
+      imageFile,
+      error: message,
+      output: error.result ? { stopReason: error.result.stopReason, content: error.result.content } : null,
+    });
+    console.error(`AI error: ${message}`);
+    sendJson(res, 502, { error: message });
+  }
+}
+
+function serveLogImage(req, res) {
+  const name = path.basename(decodeURIComponent(new URL(req.url, "http://localhost").pathname));
+  const file = path.join(IMAGE_DIR, name);
+  if (!fs.existsSync(file)) { res.writeHead(404); return res.end("Not found"); }
+  const type = Object.keys(IMAGE_TYPES).find((t) => IMAGE_TYPES[t] === path.extname(file)) || "application/octet-stream";
+  res.writeHead(200, { "Content-Type": type });
+  fs.createReadStream(file).pipe(res);
+}
+
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
 
 function serveStatic(req, res) {
@@ -123,7 +182,8 @@ function serveLogPage(res) {
   const items = lines.slice(-300).reverse().map((line) => {
     let e; try { e = JSON.parse(line); } catch { return ""; }
     const title = e.type === "ui_event" ? `${e.event} · ${esc(e.message || "")}` : `${e.type} · ${e.step || ""} · ${e.model || ""}${e.error ? " · " + esc(e.error) : ""}`;
-    const body = e.type === "ui_event" ? "" : `<pre>${esc(JSON.stringify(e, null, 2))}</pre>`;
+    const photo = e.imageFile ? `<p><img src="/log-images/${encodeURIComponent(e.imageFile)}" style="max-width:320px;border-radius:8px"></p>` : "";
+    const body = e.type === "ui_event" ? "" : `${photo}<pre>${esc(JSON.stringify(e, null, 2))}</pre>`;
     return `<details class="${e.type}"><summary><span>${e.time}</span> ${title}</summary>${body}</details>`;
   }).join("");
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -143,6 +203,11 @@ const server = http.createServer(async (req, res) => {
       if (status().mode !== "real") return sendJson(res, 409, { error: `Real AI is off: ${status().reason}` });
       return await handleTonight(req, res);
     }
+    if (req.method === "POST" && pathname === "/api/fridge") {
+      if (status().mode !== "real") return sendJson(res, 409, { error: `Real AI is off: ${status().reason}` });
+      return await handleFridge(req, res);
+    }
+    if (req.method === "GET" && pathname.startsWith("/log-images/")) return serveLogImage(req, res);
     if (req.method === "POST" && pathname === "/api/log") {
       const body = await readBody(req);
       writeLog({ type: "ui_event", event: String(body.type || "event"), message: String(body.message || "") });
