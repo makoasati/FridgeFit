@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FridgeFit Prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="page">
+    <!-- The phone: every app screen is drawn inside #screen by app.js -->
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <header id="appbar"></header>
+      <main id="screen"></main>
+      <div id="toast" class="toast"></div>
+    </div>
+
+    <!-- On-screen log: every captured action and piece of feedback appears here -->
+    <aside id="logPanel" class="log-panel">
+      <div class="log-head">
+        <div>
+          <h2>On-screen log</h2>
+          <p>Every action and piece of feedback, as it happens</p>
+        </div>
+        <button class="log-close" onclick="toggleLog()" aria-label="Hide log">✕</button>
+      </div>
+      <ol id="logList" class="log-list"></ol>
+    </aside>
+  </div>
+
+  <button id="logToggle" class="log-toggle" onclick="toggleLog()">📋 Log <span id="logCount">0</span></button>
+
+  <!-- Load order matters: the simulated AI data first, then the app -->
+  <script src="simulated_responses.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

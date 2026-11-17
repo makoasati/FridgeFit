@@ -1,0 +1,7 @@
+# Secrets and local files: never commit these
+.env
+node_modules/
+logs/
+*.zip
+.DS_Store
+Thumbs.db

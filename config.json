@@ -1,0 +1,8 @@
+{
+  "useSimulatedAI": false,
+  "provider": "anthropic",
+  "model": "claude-opus-5-5",
+  "effort": "low",
+  "maxTokens": 16000,
+  "fallbacks": "default"
+}
