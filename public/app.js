@@ -23,7 +23,8 @@ const state = {
   unclearAnswer: null,       // null | "yes" | "no" | chosen alternative
   inventory: [],             // perishables (produce, meat, dairy) only
   editingItem: null,         // id of the perishable being corrected
-  fridge: { stage: "pick", dataUrl: null, image: null, error: "", summary: null },  // fridge photo (real AI)
+  scan: null,                // a receipt, photo or email scan in progress (see scan.js)
+  scanSummary: null,         // what the last scan added, shown on the perishables screen
   adding: null,              // the "Add an item" form on the perishables screen: { when, name, qty }
 
   // Step 2–4: home screen
@@ -484,18 +485,18 @@ screens.addGroceries = () => `
   ${setupProgress(3)}
   <h2>Add your groceries</h2>
   <p class="muted">We track perishables only (produce, meat, dairy). ${SIM.pantryNote}</p>
-  <button class="option-card recommended" onclick="go('receipt'); log('Setup', 'Chose: Snap a receipt')">
+  <button class="option-card recommended" onclick="snapReceipt()">
     <span class="option-icon">🧾</span>
-    <span><b>Snap a receipt</b><small>Fastest way to start. Uses a sample receipt in this prototype.</small></span>
+    <span><b>Snap or upload a receipt</b><small>${BACKEND.mode === "real" ? "AI reads every line. Fastest way to start." : "Fastest way to start. Uses a sample receipt in this prototype."}</small></span>
     <span class="badge">Recommended</span>
   </button>
   <button class="option-card" onclick="connectEmail()">
     <span class="option-icon">📧</span>
-    <span><b>Connect email or online grocery orders</b><small>Simulated: no real account is connected.</small></span>
+    <span><b>Connect Gmail</b><small>${BACKEND.mode === "real" ? "Finds grocery receipts and orders from the last 3 weeks. Read-only." : "Simulated: no real account is connected."}</small></span>
   </button>
   <button class="option-card optional" onclick="snapFridge()">
     <span class="option-icon">📷</span>
-    <span><b>Snap your fridge</b><small>${BACKEND.mode === "real" ? "AI lists the food it can see. Optional." : "Optional extra, not required."}</small></span>
+    <span><b>Snap your fridge or pantry</b><small>${BACKEND.mode === "real" ? "AI lists the food it can see and asks about anything it can't tell." : "Optional extra, not required."}</small></span>
     <span class="badge light">Optional</span>
   </button>
   ${expectationCard("estimate")}`;
@@ -556,34 +557,6 @@ screens.receipt = () => {
       ? `<button class="btn primary block" onclick="go('perishables')">See my perishables →</button>` : ""}`;
 };
 
-/* ---- Step 1e (alternative): Fridge photo, read by the real AI ---- */
-screens.fridgePhoto = () => {
-  const f = state.fridge;
-  const picker = (label, cls) => `
-    <label class="btn ${cls} block photo-pick">${label}
-      <input type="file" accept="image/*" capture="environment" onchange="pickFridgePhoto(this)" hidden>
-    </label>`;
-  return `
-    ${setupProgress(4)}
-    <h2>Snap your fridge</h2>
-    <p class="muted">We'll list the perishables we can see. You'll check the list next.</p>
-    <div class="expect-card">
-      <div class="expect-row"><span class="expect-icon">📷</span><div><b>We only see what's in the photo.</b><span>Food behind other things or in closed drawers won't show up, so add it on the next screen.</span></div></div>
-      <div class="expect-row"><span class="expect-icon">⏳</span><div><b>Freshness from a photo is a rough guess.</b><span>It's always shown as a range, never an exact date.</span></div></div>
-    </div>
-    <ul class="photo-tips">
-      <li>Open the door wide and use good light.</li>
-      <li>Get as many shelves in the frame as you can.</li>
-      <li>Labels facing you help.</li>
-    </ul>
-    ${f.dataUrl ? `<div class="photo-preview ${f.stage === "reading" ? "reading" : ""}"><img src="${f.dataUrl}" alt="Your fridge photo">
-      ${f.stage === "reading" ? `<div class="scan-overlay"><div class="spinner"></div>Looking at your fridge…</div>` : ""}</div>` : ""}
-    ${f.error ? `<div class="notice warn">${escapeHtml(f.error)}</div>` : ""}
-    ${f.stage === "pick" ? picker("📷 Take or choose a photo", "primary") : ""}
-    ${f.stage === "preview" ? `<button class="btn primary block" onclick="readFridge()">🔍 Find my food</button>${picker("Use a different photo", "ghost")}` : ""}
-    ${f.stage !== "reading" ? `<button class="link" onclick="go('${state.inventory.length ? "perishables" : "addGroceries"}')">${state.inventory.length ? "Back to my perishables" : "Use a receipt instead"}</button>` : ""}`;
-};
-
 /* ---- Step 1f: Perishables with estimated freshness; confirm / correct / remove ---- */
 screens.perishables = () => {
   const groups = ["Produce", "Meat", "Dairy", "Other"];
@@ -600,20 +573,10 @@ screens.perishables = () => {
     ${photoSummary()}
     ${body || `<p class="muted center">No perishables left. Add groceries to get suggestions.</p>`}
     ${addItemForm()}
-    ${BACKEND.mode === "real" ? `<button class="btn ghost block" onclick="snapFridge()">📷 Add items from a fridge photo</button>` : ""}
+    ${BACKEND.mode === "real" ? `<div class="row"><button class="btn ghost" onclick="snapFridge()">📷 Add from a photo</button><button class="btn ghost" onclick="snapReceipt()">🧾 Add a receipt</button></div>` : ""}
     <div class="note-card">🫙 ${SIM.pantryNote}</div>
     <button class="btn primary block" onclick="savePerishables()">Save and see tonight's recipes</button>`;
 };
-
-function photoSummary() {
-  const s = state.fridge.summary;
-  if (!s) return "";
-  const parts = [`Your photo showed ${s.found} item${s.found === 1 ? "" : "s"}`];
-  if (s.added) parts.push(`${s.added} added below`);
-  if (s.alsoOnReceipt) parts.push(`${s.alsoOnReceipt} already on your receipt`);
-  const unclear = s.unclear.length ? `<br>We couldn't tell what these were: ${s.unclear.map(escapeHtml).join("; ")}. If any of them is food, add it with “Add an item” below.` : "";
-  return `<div class="notice">📷 ${parts.join(", ")}.${unclear}</div>`;
-}
 
 /* Add something the receipt or photo missed. The user says roughly when it needs using. */
 const ADD_WHEN = {
@@ -645,27 +608,32 @@ function pickAddWhen(k) {
   render();
 }
 
+/* An item the user named themselves. If it's a food the recipes know, it gets that id so recipes can count it. */
+function makeUserItem(name, qty, when, note) {
+  const words = { spinach: /spinach/i, tomatoes: /tomato/i, chicken: /chicken/i, feta: /feta/i, yogurt: /yog(h)?urt/i, eggs: /\beggs?\b/i };
+  const knownId = Object.keys(words).find((k) => words[k].test(name) && !state.inventory.some((i) => i.id === k));
+  const known = knownId ? SIM.perishables.find((p) => p.id === knownId) : null;
+  return {
+    id: knownId || `item-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${state.inventory.length}`,
+    name,
+    qty,
+    emoji: known ? known.emoji : "🍱",
+    category: known ? known.category : "Other",
+    freshness: ADD_WHEN[when].freshness,
+    urgency: when,
+    confidence: note,
+    highRisk: known ? known.highRisk : false,
+    status: "confirmed",
+    source: "user",
+  };
+}
+
 function saveAddedItem() {
   const name = document.getElementById("addName").value.trim();
   const qty = document.getElementById("addQty").value.trim() || "some";
   if (!name) return toast("Type what the item is first.");
   const when = state.adding.when || "soon";
-  // If it's a food the recipes know, use that id so recipes can count it
-  const words = { spinach: /spinach/i, tomatoes: /tomato/i, chicken: /chicken/i, feta: /feta/i, yogurt: /yog(h)?urt/i, eggs: /\beggs?\b/i };
-  const knownId = Object.keys(words).find((k) => words[k].test(name) && !state.inventory.some((i) => i.id === k));
-  const known = knownId ? SIM.perishables.find((p) => p.id === knownId) : null;
-  const id = knownId || `added-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${state.inventory.length}`;
-  state.inventory.push({
-    id, name, qty,
-    emoji: known ? known.emoji : "🍱",
-    category: known ? known.category : "Other",
-    freshness: ADD_WHEN[when].freshness,
-    urgency: when,
-    confidence: "Added by you",
-    highRisk: known ? known.highRisk : false,
-    status: "confirmed",
-    source: "user",
-  });
+  state.inventory.push(makeUserItem(name, qty, when, "Added by you"));
   log("Inventory", `Added ${name} (${qty}) by hand, needs using: ${ADD_WHEN[when].label.toLowerCase()}`);
   state.adding = null;
   render();
@@ -1022,132 +990,7 @@ function finishTaste() {
 }
 
 /* Step 1: groceries */
-function connectEmail() {
-  log("Setup", "Tapped Connect email or online grocery orders (simulated)");
-  log("AI", SIM.connectEmailResult);
-  toast(SIM.connectEmailResult);
-}
-
-function snapFridge() {
-  if (BACKEND.mode === "real") {
-    log("Setup", "Tapped Snap your fridge (real AI)");
-    state.fridge = { stage: "pick", dataUrl: null, image: null, error: "", summary: state.fridge.summary };
-    go("fridgePhoto");
-    return;
-  }
-  log("Setup", "Tapped Snap your fridge (optional, simulated)");
-  log("AI", SIM.fridgePhotoResult);
-  toast(SIM.fridgePhotoResult);
-}
-
-/* Shrink the photo before sending it: about 1568 px on the long side is plenty for the model,
-   and keeps uploads small and requests cheap. */
-function resizeImage(file, maxSide = 1568) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Couldn't read that file."));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("That file isn't a photo the app can open."));
-      img.onload = () => {
-        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-        resolve({ dataUrl, mediaType: "image/jpeg", data: dataUrl.split(",")[1], width: canvas.width, height: canvas.height });
-      };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-async function pickFridgePhoto(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  try {
-    const photo = await resizeImage(file);
-    state.fridge = { ...state.fridge, stage: "preview", dataUrl: photo.dataUrl, image: { mediaType: photo.mediaType, data: photo.data }, error: "" };
-    log("Setup", `Added a fridge photo (${photo.width}×${photo.height}, ${Math.round((photo.data.length * 3) / 4 / 1024)} KB after resizing)`);
-  } catch (error) {
-    state.fridge = { ...state.fridge, stage: "pick", error: error.message };
-  }
-  render();
-}
-
-async function readFridge() {
-  const f = state.fridge;
-  if (!f.image) return;
-  state.fridge = { ...f, stage: "reading", error: "" };
-  render();
-  try {
-    const res = await fetch("/api/fridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f.image) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    if (data.photoProblem && !data.items.length) {
-      log("AI", `Fridge photo: no food found (${data.photoProblem})`);
-      state.fridge = { ...state.fridge, stage: "preview", error: `We couldn't read this photo: ${data.photoProblem} Try another one with the door wide open and good light.` };
-      return render();
-    }
-    const found = photoItemsToInventory(data.items);
-    const { added, alsoOnReceipt } = mergeInventory(found);
-    log("AI", `Fridge photo (${data.model}): found ${data.items.length} item(s): ${data.items.map((i) => `${i.name} (${i.confidence})`).join(", ") || "none"}${data.unclear.length ? `; couldn't identify: ${data.unclear.join("; ")}` : ""}`);
-    state.fridge = { stage: "pick", dataUrl: null, image: null, error: "", summary: { found: data.items.length, added, alsoOnReceipt, unclear: data.unclear } };
-    go("perishables");
-  } catch (error) {
-    log("AI", `Fridge photo failed: ${error.message}`);
-    state.fridge = { ...state.fridge, stage: "preview", error: `The AI didn't answer: ${error.message}` };
-    render();
-  }
-}
-
-/* Turn what the model saw into inventory items. Items that match a food the recipes know
-   (spinach, tomatoes, chicken, feta, yogurt, eggs) get that id, so recipes can use them. */
-function photoItemsToInventory(items) {
-  const icons = { Produce: "🥬", Meat: "🍗", Dairy: "🧀", Other: "🍱" };
-  const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const used = new Set();
-  return items.map((it, n) => {
-    const known = it.matchesKnownItem && it.matchesKnownItem !== "none" ? SIM.perishables.find((p) => p.id === it.matchesKnownItem) : null;
-    let id = known ? known.id : `photo-${slug(it.name) || "item"}`;
-    if (used.has(id)) id = `${id}-${n}`;
-    used.add(id);
-    const category = ["Produce", "Meat", "Dairy"].includes(it.category) ? it.category : "Other";
-    return {
-      id,
-      name: it.name,
-      emoji: known ? known.emoji : icons[category],
-      qty: it.amount || "some",
-      category,
-      freshness: it.freshness || "Estimated from photo",
-      urgency: ["urgent", "soon", "week", "long"].includes(it.urgency) ? it.urgency : "week",
-      confidence: `${String(it.confidence).charAt(0).toUpperCase() + String(it.confidence).slice(1)} confidence (from photo)`,
-      highRisk: known ? known.highRisk : category === "Meat" || category === "Dairy",
-      status: "detected",
-      source: "photo",
-    };
-  });
-}
-
-/* Add photo items to what's already there. If the receipt already has the item, keep the receipt's
-   details and note that the photo agrees. */
-function mergeInventory(found) {
-  let added = 0;
-  let alsoOnReceipt = 0;
-  for (const item of found) {
-    const existing = state.inventory.find((i) => i.id === item.id);
-    if (existing) {
-      if (existing.status === "detected") existing.confidence = "On your receipt and in the photo";
-      alsoOnReceipt++;
-    } else {
-      state.inventory.push(item);
-      added++;
-    }
-  }
-  return { added, alsoOnReceipt };
-}
+/* Receipt photos, fridge or pantry photos and Gmail receipts live in scan.js */
 
 function scanReceipt() {
   state.receiptStage = "scanning";
@@ -1167,7 +1010,7 @@ function scanReceipt() {
 function answerUnclear(answer) {
   const uq = SIM.unclearQuestion;
   state.unclearAnswer = answer;
-  const fromPhoto = state.inventory.filter((i) => i.source === "photo");   // keep anything a fridge photo already added
+  const fromPhoto = state.inventory.filter((i) => i.source);   // keep anything a photo, receipt, email or the user already added
   state.inventory = AI.findPerishables();
   fromPhoto.forEach((p) => { if (!state.inventory.some((i) => i.id === p.id)) state.inventory.push(p); });
   const spinach = state.inventory.find((i) => i.id === "spinach");
@@ -1852,8 +1695,8 @@ function keepCooking() {
 
 /* =========================== 7. RENDER =========================== */
 function renderAppBar() {
-  const setupScreens = ["quizPrefs", "quizTaste", "addGroceries", "receipt", "fridgePhoto", "perishables"];
-  const back = { quizTaste: "quizPrefs", addGroceries: "quizTaste", receipt: "addGroceries", fridgePhoto: "addGroceries", perishables: state.receiptStage === "scanned" ? "receipt" : "addGroceries", recipe: "home" }[state.screen];
+  const setupScreens = ["quizPrefs", "quizTaste", "addGroceries", "receipt", "receiptPhoto", "fridgePhoto", "email", "scanReview", "perishables"];
+  const back = { quizTaste: "quizPrefs", addGroceries: "quizTaste", receipt: "addGroceries", fridgePhoto: "addGroceries", receiptPhoto: "addGroceries", email: "addGroceries", scanReview: "addGroceries", perishables: state.receiptStage === "scanned" ? "receipt" : "addGroceries", recipe: "home" }[state.screen];
   document.getElementById("appbar").innerHTML = `
     ${back ? `<button class="back" onclick="go('${back}')" aria-label="Back">‹</button>` : `<span class="back-spacer"></span>`}
     <div class="brand"><span class="leaf">🌿</span>FridgeFit</div>

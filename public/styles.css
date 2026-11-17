@@ -431,3 +431,28 @@ textarea { font: inherit; font-size: 14px; border: 1.5px solid var(--line); bord
 .photo-preview img { display: block; width: 100%; max-height: 360px; object-fit: contain; background: #f3f1ea; }
 .photo-preview.reading img { filter: brightness(0.75); }
 .photo-pick { cursor: pointer; text-align: center; }
+
+/* ---------- Scan review: "?" markers on the photo, questions, voice ---------- */
+.photo-preview.marked { overflow: visible; }
+.photo-preview.marked img { max-height: none; }
+.q-marker { position: absolute; transform: translate(-50%, -50%); width: 34px; height: 34px; border-radius: 50%; border: 3px solid #fff;
+  background: #e8a317; color: #fff; font-weight: 800; font-size: 18px; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,.35); cursor: pointer; padding: 0; }
+.q-marker small { position: absolute; right: -8px; bottom: -8px; background: #fff; color: #7a5200; border-radius: 99px; font-size: 10px; padding: 1px 5px; border: 1px solid #e8a317; }
+.q-marker.done { background: var(--green); }
+.q-marker.done small { color: var(--green); border-color: var(--green); }
+.q-badge { display: inline-block; background: #e8a317; color: #fff; border-radius: 99px; padding: 1px 8px; font-size: 13px; margin-right: 4px; }
+.q-badge.done { background: var(--green); }
+.question-card.ask { border-color: #e8a317; }
+.answer-row { display: flex; gap: 8px; align-items: center; }
+.answer-row input { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; font-size: 15px; }
+.mic { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: #fff; font-size: 20px; cursor: pointer; }
+.mic.on { background: #fde2e2; border-color: #d9534f; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(217, 83, 79, 0.15); } }
+.listening { color: #b03a37; margin: 0; }
+.q-done { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; font-size: 14px; }
+.found-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.found-chip { background: var(--green-soft); color: var(--green-dark); border-radius: 99px; padding: 5px 10px; font-size: 13px; }
+.found-chip small { color: #8a6d00; }
+.email-row { display: flex; flex-direction: column; gap: 2px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; font-size: 14px; }
+.email-row small { color: var(--muted); }
+.email-row span { color: var(--green-dark); font-weight: 600; }

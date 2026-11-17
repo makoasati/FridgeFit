@@ -5,3 +5,6 @@ logs/
 *.zip
 .DS_Store
 Thumbs.db
+
+# Gmail sign-in token (created when you connect Gmail)
+.gmail-token.json

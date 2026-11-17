@@ -19,12 +19,15 @@ Unless a case says otherwise, use the sample receipt, answer Yes to "Is 'TJ ORG 
 - Did the guardrail have to remove anything? (Check the log for "Guardrail removed".)
 - How long did it take? (`latencyMs` in the log)
 
-## Fridge photo checks
+## Receipt, photo and email checks
 
-These cover the second AI step (reading a fridge photo). Start from "Add your groceries" and choose **Snap your fridge**.
+These cover the AI steps that add groceries. Start from "Add your groceries".
 
 | Photo | What a good output looks like |
 |---|---|
 | `docs/test-photos/sample-fridge.png` (drawn test fridge) | Lists eggs, feta, chicken thighs, baby spinach, cherry tomatoes, a bell pepper and a lemon, and matches the first five to the foods the recipes know. Skips the milk (a drink). The takeout box shows up as leftovers with medium or low confidence, or under "couldn't tell". The closed drawer goes under "couldn't tell". Chicken and spinach get the shortest freshness ranges. |
 | A real photo of your own fridge, door wide open, good light | Every clearly visible perishable is listed. Nothing is listed that isn't in the photo. Items that are partly hidden say medium or low confidence. Freshness is always a range. |
 | A dark, blurry or non-fridge photo | No food is invented. The app says what's wrong with the photo and asks for another one. |
+| `docs/test-photos/sample-receipt.png` (Snap or upload a receipt) | Store Jewel-Osco, date 11/16/26. Spinach, chicken, yogurt, eggs and cherry tomatoes match the recipe foods. Strawberries, avocados and butter are perishables. Rice and olive oil are pantry, and paper towels and the bag fee are not food. "SG MZZ FRS 8" and "OS PLM 2CT" come back as questions with sensible guesses (mozzarella, plums). Chicken gets the shortest freshness range. |
+| A real photo with something hard to identify (an unlabeled container) | A ? marker sits on that thing in the photo, with 1 to 3 guesses. Answering by tapping, typing and 🎤 all work, and the answer shows up on the perishables screen. |
+| Connect Gmail with a recent grocery order | Finds the order email, lists its perishables with freshness counted from the order date, and skips drinks and pantry items. A non-grocery email that matches the search adds nothing. |

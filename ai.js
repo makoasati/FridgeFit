@@ -1,10 +1,11 @@
 // The real AI steps in FridgeFit:
 //   1. pickTonightRecipes: choose tonight's 3 recipes and write the reason on each card
-//   2. detectFridgeItems: list the perishables visible in a fridge photo
+//   2. detectPhotoItems: list the perishables in a fridge or pantry photo, and mark what it can't identify
+//   3. readReceipt: read a receipt photo or a grocery order email, line by line
 // Everything else in the app stays simulated (see public/simulated_responses.js).
 import Anthropic from "@anthropic-ai/sdk";
 
-// The food ids the recipe catalog knows about. Photo items that match one of these can be used by recipes.
+// The food ids the recipe catalog knows about. Items that match one of these can be used by recipes.
 export const KNOWN_ITEMS = ["spinach", "tomatoes", "chicken", "feta", "yogurt", "eggs"];
 
 /* ------------------------------ shared ------------------------------ */
@@ -42,6 +43,28 @@ async function callWithTool(request, toolName, config) {
   result.toolInput = call.input;
   return result;
 }
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// The fields every detected food item has, whether it came from a photo, a receipt or an email.
+const ITEM_RULES = `- name: what it is, in plain words, as specific as you can (for example "Baby spinach" or "Bell peppers").
+- matchesKnownItem: use one of these if it is clearly that food, otherwise "none": spinach (baby spinach or other loose leafy greens like it), tomatoes (fresh tomatoes, including cherry tomatoes), chicken (raw chicken), feta, yogurt, eggs.
+- category: Produce, Meat (including fish), Dairy (including eggs) or Other.
+- amount: a rough amount, for example "1 bag", "about 6" or "half a tub".
+- freshness: a rough estimate written as "Estimated: use within N to M days". It is a guess, so keep ranges honest and never say food is safe.
+- urgency: urgent (about 1 to 2 days), soon (about 2 to 4 days), week (about 5 to 10 days) or long (more than 10 days).
+- confidence: high when you are sure what it is, medium when it is partly hidden or the label is hard to read, low when you are unsure.`;
+
+const itemProperties = {
+  name: { type: "string" },
+  matchesKnownItem: { type: "string", enum: [...KNOWN_ITEMS, "none"] },
+  category: { type: "string", enum: ["Produce", "Meat", "Dairy", "Other"] },
+  amount: { type: "string" },
+  freshness: { type: "string" },
+  urgency: { type: "string", enum: ["urgent", "soon", "week", "long"] },
+  confidence: { type: "string", enum: ["high", "medium", "low"] },
+};
+const itemRequired = Object.keys(itemProperties);
 
 /* ------------------------- 1. tonight's recipes ------------------------- */
 
@@ -109,48 +132,49 @@ export async function pickTonightRecipes(input, config) {
   return result;
 }
 
-/* --------------------------- 2. fridge photo --------------------------- */
+/* ---------------------- 2. fridge or pantry photo ---------------------- */
 
-export const FRIDGE_PROMPT = `You look at a photo of the inside of someone's fridge for FridgeFit, an app that suggests recipes from what people already have, starting with food that is about to go bad.
+export const PHOTO_PROMPT = `You look at a photo of someone's fridge or pantry for FridgeFit, an app that suggests recipes from what people already have, starting with food that is about to go bad.
 
-List the perishable food you can see: produce, meat, fish, dairy, eggs, tofu and leftovers. Skip drinks, condiments, sauces, jams and anything shelf-stable. Only list what you can actually see. Don't guess at what might be behind other things or inside closed drawers.
+List the perishable food you can see: produce (including fruit and vegetables kept outside the fridge, like potatoes, onions or bananas), meat, fish, dairy, eggs, tofu, fresh bread and leftovers. Skip drinks, condiments, sauces, jams and shelf-stable food such as canned goods, dry pasta, rice, cereal, snacks and coffee. Only list what you can actually see. Don't guess at what might be behind other things or inside closed drawers.
 
-For each item:
-- name: what it is, in plain words, as specific as the photo allows (for example "Baby spinach" or "Bell peppers").
-- matchesKnownItem: use one of these if it is clearly that food, otherwise "none": spinach (baby spinach or other loose leafy greens like it), tomatoes (fresh tomatoes, including cherry tomatoes), chicken (raw chicken), feta, yogurt, eggs.
-- category: Produce, Meat (including fish), Dairy (including eggs) or Other.
-- amount: a rough amount, for example "1 bag", "about 6" or "half a tub".
-- freshness: a rough estimate written as "Estimated: use within N to M days", from how it looks and its usual fridge life. It is a guess from a photo, so keep ranges honest and never say food is safe.
-- urgency: urgent (about 1 to 2 days), soon (about 2 to 4 days), week (about 5 to 10 days) or long (more than 10 days).
-- confidence: high when the item is clearly visible and easy to identify, medium when it is partly hidden or the label is hard to read, low when you are unsure.
+For each item you can identify:
+${ITEM_RULES}
+Base freshness on how the food looks and its usual storage life.
 
-Put things you can see but cannot identify in unclear, as short descriptions like "a foil-covered dish on the top shelf". If the photo is not a fridge, or is too dark or blurry to read, return no items and say what is wrong in photoProblem. Otherwise leave photoProblem empty. Answer by calling the report_fridge_items tool.`;
+Some things will look like food but you won't be able to tell what they are, for example an unlabeled container or a bin of pale round items. Put each of those in unclear, with:
+- description: where it is and what it looks like, in a few words, for example "clear bin of pale round items, top shelf".
+- guesses: up to 3 likely answers, most likely first.
+- x and y: the center of the thing in the photo, as a percentage of the image width and height (0 is the left or top edge, 100 is the right or bottom edge).
+Don't put things in unclear that you already listed as items, and don't list drinks or shelf-stable food there either.
 
-const fridgeTool = {
-  name: "report_fridge_items",
-  description: "Report the perishable food visible in the fridge photo.",
+If the photo isn't a fridge or pantry, or is too dark or blurry to read, return no items and say what is wrong in photoProblem. Otherwise leave photoProblem empty. Answer by calling the report_photo_items tool.`;
+
+const photoTool = {
+  name: "report_photo_items",
+  description: "Report the perishable food visible in the photo, and the things that may be food but can't be identified.",
   strict: true,
   input_schema: {
     type: "object",
     properties: {
       items: {
         type: "array",
+        items: { type: "object", properties: itemProperties, required: itemRequired, additionalProperties: false },
+      },
+      unclear: {
+        type: "array",
         items: {
           type: "object",
           properties: {
-            name: { type: "string" },
-            matchesKnownItem: { type: "string", enum: [...KNOWN_ITEMS, "none"] },
-            category: { type: "string", enum: ["Produce", "Meat", "Dairy", "Other"] },
-            amount: { type: "string" },
-            freshness: { type: "string" },
-            urgency: { type: "string", enum: ["urgent", "soon", "week", "long"] },
-            confidence: { type: "string", enum: ["high", "medium", "low"] },
+            description: { type: "string" },
+            guesses: { type: "array", items: { type: "string" } },
+            x: { type: "number" },
+            y: { type: "number" },
           },
-          required: ["name", "matchesKnownItem", "category", "amount", "freshness", "urgency", "confidence"],
+          required: ["description", "guesses", "x", "y"],
           additionalProperties: false,
         },
       },
-      unclear: { type: "array", items: { type: "string" } },
       photoProblem: { type: "string" },
     },
     required: ["items", "unclear", "photoProblem"],
@@ -159,26 +183,100 @@ const fridgeTool = {
 };
 
 // image: { mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif", data: base64 string }
-export async function detectFridgeItems(image, config) {
+export async function detectPhotoItems(image, config) {
   const request = {
     model: config.photoModel || config.model,
     max_tokens: config.maxTokens ?? 16000,
     output_config: { effort: config.photoEffort || config.effort || "low" },
-    system: FRIDGE_PROMPT,
-    tools: [fridgeTool],
+    system: PHOTO_PROMPT,
+    tools: [photoTool],
     tool_choice: { type: "auto" },
     messages: [{
       role: "user",
       content: [
         { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
-        { type: "text", text: "List the perishable food in this fridge photo with the report_fridge_items tool." },
+        { type: "text", text: "List the perishable food in this photo with the report_photo_items tool." },
       ],
     }],
   };
-  const result = await callWithTool(request, "report_fridge_items", config);
+  const result = await callWithTool(request, "report_photo_items", config);
   const out = result.toolInput || {};
+  const pct = (n) => Math.max(0, Math.min(100, Number(n) || 0));
   result.items = Array.isArray(out.items) ? out.items : [];
-  result.unclear = Array.isArray(out.unclear) ? out.unclear.map(String) : [];
+  result.unclear = Array.isArray(out.unclear)
+    ? out.unclear.map((u) => ({ description: String(u.description || ""), guesses: (u.guesses || []).map(String).slice(0, 3), x: pct(u.x), y: pct(u.y) }))
+    : [];
   result.photoProblem = String(out.photoProblem || "");
+  return result;
+}
+
+/* ---------------------- 3. receipt photo or email ---------------------- */
+
+export const RECEIPT_PROMPT = `You read grocery receipts and online grocery orders for FridgeFit, an app that tracks the perishable food people buy so it can suggest recipes before the food goes bad. The receipt comes either as a photo or as the text of an email.
+
+List every purchased item. Skip totals, subtotals, tax, payment, savings, loyalty points, delivery fees and ads. For each item line:
+- raw: the line as printed (for emails, the item name as written).
+- kind: perishable (fresh produce, meat, fish, dairy, eggs, tofu, fresh bread, fresh prepared food), pantry (shelf-stable food such as rice, pasta, canned goods, oil, spices, snacks, coffee, drinks), nonfood (bags, household items, deposits), or unclear (you can't tell what it is, often because of an abbreviation).
+- guesses: for unclear lines, up to 3 likely answers, most likely first. Empty for other lines.
+
+For perishable lines, also fill in:
+${ITEM_RULES}
+Count freshness from today, using the purchase date if it is shown and the food's usual fridge life. For an unclear line, fill these fields from your best guess, with low confidence. For pantry and nonfood lines, use name as written, matchesKnownItem none, category Other, amount empty, freshness empty, urgency long and confidence high.
+
+Also give the store name and purchase date if they are shown, otherwise leave them empty. If this isn't a grocery receipt or order, or you can't read it, return no lines and say why in problem. Otherwise leave problem empty. Answer by calling the report_receipt tool.`;
+
+const receiptTool = {
+  name: "report_receipt",
+  description: "Report every purchased item on the receipt or order, with details for the perishable ones.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      store: { type: "string" },
+      date: { type: "string" },
+      lines: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            raw: { type: "string" },
+            kind: { type: "string", enum: ["perishable", "pantry", "nonfood", "unclear"] },
+            guesses: { type: "array", items: { type: "string" } },
+            ...itemProperties,
+          },
+          required: ["raw", "kind", "guesses", ...itemRequired],
+          additionalProperties: false,
+        },
+      },
+      problem: { type: "string" },
+    },
+    required: ["store", "date", "lines", "problem"],
+    additionalProperties: false,
+  },
+};
+
+// source: { image: { mediaType, data } } for a photo, or { text, subject, from, date } for an email
+export async function readReceipt(source, config) {
+  const content = source.image
+    ? [
+        { type: "image", source: { type: "base64", media_type: source.image.mediaType, data: source.image.data } },
+        { type: "text", text: `Today is ${today()}. Read this receipt photo with the report_receipt tool.` },
+      ]
+    : `Today is ${today()}. This is the text of an email that may be a grocery receipt or order.\n\nFrom: ${source.from}\nDate: ${source.date}\nSubject: ${source.subject}\n\n${source.text}\n\nRead it with the report_receipt tool.`;
+  const request = {
+    model: config.photoModel || config.model,
+    max_tokens: config.maxTokens ?? 16000,
+    output_config: { effort: config.photoEffort || config.effort || "low" },
+    system: RECEIPT_PROMPT,
+    tools: [receiptTool],
+    tool_choice: { type: "auto" },
+    messages: [{ role: "user", content }],
+  };
+  const result = await callWithTool(request, "report_receipt", config);
+  const out = result.toolInput || {};
+  result.store = String(out.store || "");
+  result.date = String(out.date || "");
+  result.lines = Array.isArray(out.lines) ? out.lines.map((l) => ({ ...l, guesses: (l.guesses || []).map(String).slice(0, 3) })) : [];
+  result.problem = String(out.problem || "");
   return result;
 }
