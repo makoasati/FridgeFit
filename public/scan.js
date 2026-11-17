@@ -582,7 +582,7 @@ function photoSummary() {
   const icon = { receipt: "🧾", photo: "📷", email: "📧" }[s.source];
   const parts = [`Your ${SOURCE_LABEL[s.source]} had ${s.found} perishable${s.found === 1 ? "" : "s"}`];
   if (s.answered) parts.push(`plus ${s.answered} you told us about`);
-  const tail = [s.added && `${s.added} added below`, s.already && `${s.already} already on your list`].filter(Boolean).join(", ");
+  const tail = [s.added && `${s.added} added to your list`, s.already && `${s.already} already on your list`].filter(Boolean).join(", ");
   const left = s.unanswered ? ` ${s.unanswered} question${s.unanswered === 1 ? " was" : "s were"} skipped. You can add ${s.unanswered === 1 ? "it" : "them"} by hand when you review your list.` : "";
   return `<div class="notice">${icon} ${parts.join(", ")}${tail ? `: ${tail}` : ""}.${left}</div>`;
 }
