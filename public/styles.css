@@ -456,3 +456,7 @@ textarea { font: inherit; font-size: 14px; border: 1.5px solid var(--line); bord
 .email-row { display: flex; flex-direction: column; gap: 2px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; font-size: 14px; }
 .email-row small { color: var(--muted); }
 .email-row span { color: var(--green-dark); font-weight: 600; }
+
+/* ---------- Groceries hub ---------- */
+.option-card.is-done { border-color: var(--green); background: #f6fbf3; }
+.badge.done { background: var(--green); color: #fff; }

@@ -47,24 +47,23 @@ async function callWithTool(request, toolName, config) {
 const today = () => new Date().toISOString().slice(0, 10);
 
 // The fields every detected food item has, whether it came from a photo, a receipt or an email.
+// Freshness comes back as whole numbers of days. The app turns them into the label the user sees,
+// so the wording stays consistent and the date arithmetic is done in code, not by the model.
 const ITEM_RULES = `- name: what it is, in plain words, as specific as you can (for example "Baby spinach" or "Bell peppers").
 - matchesKnownItem: use one of these if it is clearly that food, otherwise "none": spinach (baby spinach or other loose leafy greens like it), tomatoes (fresh tomatoes, including cherry tomatoes), chicken (raw chicken), feta, yogurt, eggs.
 - category: Produce, Meat (including fish), Dairy (including eggs) or Other.
 - amount: a rough amount, for example "1 bag", "about 6" or "half a tub".
-- freshness: a rough estimate written as "Estimated: use within N to M days". It is a guess, so keep ranges honest and never say food is safe.
-- urgency: urgent (about 1 to 2 days), soon (about 2 to 4 days), week (about 5 to 10 days) or long (more than 10 days).
-- confidence: high when you are sure what it is, medium when it is partly hidden or the label is hard to read, low when you are unsure.`;
+- confidence: how sure you are about what the item is (not how fresh it is). high when you are sure, medium when it is partly hidden or the label is hard to read, low when you are guessing.`;
 
 const itemProperties = {
   name: { type: "string" },
   matchesKnownItem: { type: "string", enum: [...KNOWN_ITEMS, "none"] },
   category: { type: "string", enum: ["Produce", "Meat", "Dairy", "Other"] },
   amount: { type: "string" },
-  freshness: { type: "string" },
-  urgency: { type: "string", enum: ["urgent", "soon", "week", "long"] },
   confidence: { type: "string", enum: ["high", "medium", "low"] },
 };
-const itemRequired = Object.keys(itemProperties);
+const photoDays = { daysLeftMin: { type: "integer" }, daysLeftMax: { type: "integer" } };
+const receiptDays = { fridgeLifeMin: { type: "integer" }, fridgeLifeMax: { type: "integer" } };
 
 /* ------------------------- 1. tonight's recipes ------------------------- */
 
@@ -78,6 +77,7 @@ Choose exactly 3 different recipes from the catalog, best first, and return them
 - Prefer recipes the user can make with what they have. A recipe that needs something they would have to buy should rank lower.
 - Respect the time they have tonight and their cooking skill.
 - Lean toward the cuisines they picked and dishes like the ones they said Yes to.
+- Don't build tonight's meal around food whose freshness says it is past its usual fridge life. The user may not have it anymore.
 
 For each pick, write the reason the user will see on the recipe card: one short sentence, under 15 words, in plain words. Name the perishables it uses and how soon they go bad, using only what the data says, for example "Uses the spinach that needs using in 1 to 2 days, plus your tomatoes". Freshness is an estimate, so never give exact dates or say food is safe. No exclamation marks.`;
 
@@ -140,7 +140,7 @@ List the perishable food you can see: produce (including fruit and vegetables ke
 
 For each item you can identify:
 ${ITEM_RULES}
-Base freshness on how the food looks and its usual storage life.
+- daysLeftMin and daysLeftMax: a rough range for how many more days it will keep from today, judging by how it looks and how long that food usually lasts. Whole numbers, for example 2 and 4. Use 0 for both if it already looks past its best. Keep ranges honest: this is a guess from a photo.
 
 Some things will look like food but you won't be able to tell what they are, for example an unlabeled container or a bin of pale round items. Put each of those in unclear, with:
 - description: where it is and what it looks like, in a few words, for example "clear bin of pale round items, top shelf".
@@ -159,7 +159,7 @@ const photoTool = {
     properties: {
       items: {
         type: "array",
-        items: { type: "object", properties: itemProperties, required: itemRequired, additionalProperties: false },
+        items: { type: "object", properties: { ...itemProperties, ...photoDays }, required: [...Object.keys(itemProperties), ...Object.keys(photoDays)], additionalProperties: false },
       },
       unclear: {
         type: "array",
@@ -221,9 +221,10 @@ List every purchased item. Skip totals, subtotals, tax, payment, savings, loyalt
 
 For perishable lines, also fill in:
 ${ITEM_RULES}
-Count freshness from today, using the purchase date if it is shown and the food's usual fridge life. For an unclear line, fill these fields from your best guess, with low confidence. For pantry and nonfood lines, use name as written, matchesKnownItem none, category Other, amount empty, freshness empty, urgency long and confidence high.
+- fridgeLifeMin and fridgeLifeMax: how many days this food usually keeps in the fridge after it's bought, as whole numbers, for example 5 and 7 for baby spinach. Count from the day of purchase, not from today, and don't adjust for the receipt date: the app does that.
+For an unclear line, fill these fields from your best guess, with low confidence. For pantry and nonfood lines, use name as written, matchesKnownItem none, category Other, amount empty, fridgeLifeMin and fridgeLifeMax 0, and confidence high.
 
-Also give the store name and purchase date if they are shown, otherwise leave them empty. If this isn't a grocery receipt or order, or you can't read it, return no lines and say why in problem. Otherwise leave problem empty. Answer by calling the report_receipt tool.`;
+Also give the store name if it is shown, and the purchase date as YYYY-MM-DD if it is shown. Otherwise leave them empty. If this isn't a grocery receipt or order, or you can't read it, return no lines and say why in problem. Otherwise leave problem empty. Answer by calling the report_receipt tool.`;
 
 const receiptTool = {
   name: "report_receipt",
@@ -243,8 +244,9 @@ const receiptTool = {
             kind: { type: "string", enum: ["perishable", "pantry", "nonfood", "unclear"] },
             guesses: { type: "array", items: { type: "string" } },
             ...itemProperties,
+            ...receiptDays,
           },
-          required: ["raw", "kind", "guesses", ...itemRequired],
+          required: ["raw", "kind", "guesses", ...Object.keys(itemProperties), ...Object.keys(receiptDays)],
           additionalProperties: false,
         },
       },

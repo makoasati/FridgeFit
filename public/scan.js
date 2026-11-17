@@ -175,7 +175,7 @@ async function readScan() {
     if (s.source === "receipt") {
       if (data.problem && !data.lines.length) throw new Error(`We couldn't read this receipt: ${data.problem}`);
       s.receipt = { store: data.store, date: data.date, lines: data.lines };
-      addReceiptLines(s, data.lines, data.store ? `on your ${data.store} receipt` : "on your receipt");
+      addReceiptLines(s, data.lines, data.store ? `on your ${data.store} receipt` : "on your receipt", data.date);
       log("AI", `Receipt (${data.model}): ${data.store || "store unknown"}, ${data.lines.length} lines: ${summarizeLines(data.lines)}`);
     } else {
       if (data.photoProblem && !data.items.length) throw new Error(`We couldn't read this photo: ${data.photoProblem} Try another one with good light.`);
@@ -198,10 +198,10 @@ function summarizeLines(lines) {
 }
 
 // Receipt and email lines: perishables become items, unclear lines become questions
-function addReceiptLines(s, lines, where) {
+function addReceiptLines(s, lines, where, purchaseDate) {
   lines.forEach((line) => {
-    if (line.kind === "perishable") s.items.push(line);
-    if (line.kind === "unclear") s.questions.push(newQuestion(`q${s.questions.length}`, `“${line.raw}” ${where}`, line.guesses, { guess: line }));
+    if (line.kind === "perishable") s.items.push({ ...line, purchaseDate });
+    if (line.kind === "unclear") s.questions.push(newQuestion(`q${s.questions.length}`, `“${line.raw}” ${where}`, line.guesses, { guess: { ...line, purchaseDate } }));
   });
 }
 
@@ -267,7 +267,7 @@ async function scanGmail() {
       return Object.assign(s, { stage: "pick", error: `${why} Try a receipt photo instead.` }) && render();
     }
     s.emails = data.emails;
-    useful.forEach((e) => addReceiptLines(s, e.lines, `in your ${e.store || "grocery"} email`));
+    useful.forEach((e) => addReceiptLines(s, e.lines, `in your ${e.store || "grocery"} email`, e.purchaseDate || e.date));
     s.stage = "review";
     go("scanReview");
   } catch (error) {
@@ -427,6 +427,14 @@ function emailView(emails) {
   }).join("");
 }
 
+function receiptDateNote(s) {
+  if (s.source !== "receipt" || !s.receipt || !s.receipt.date) return "";
+  const age = daysSince(s.receipt.date);
+  if (age <= 14) return "";
+  const past = s.items.filter((i) => freshnessFor({ ...i, purchaseDate: s.receipt.date }).pastLife).length;
+  return `<div class="notice warn">This receipt is from ${escapeHtml(shortDate(s.receipt.date))}, and freshness is counted from that date.${past ? ` ${past} of ${s.items.length} item${s.items.length === 1 ? " is" : "s are"} past ${past === 1 ? "its" : "their"} usual fridge life. Remove ${past === 1 ? "it" : "them"} on the next screen if ${past === 1 ? "it's" : "they're"} gone.` : ""}</div>`;
+}
+
 screens.scanReview = () => {
   const s = state.scan;
   const marked = s.questions.filter((q) => q.x !== null);
@@ -439,17 +447,73 @@ screens.scanReview = () => {
     ${setupProgress(4)}
     <h2>Here's what we found</h2>
     <p class="muted">${s.items.length} perishable${s.items.length === 1 ? "" : "s"} from your ${SOURCE_LABEL[s.source]}.${askLine}</p>
+    ${receiptDateNote(s)}
     ${top}
-    ${s.items.length ? `<div class="found-list">${s.items.map((i) => `<span class="found-chip">${escapeHtml(i.name)}${i.confidence !== "high" ? ` <small>${i.confidence} confidence</small>` : ""}</span>`).join("")}</div>` : ""}
+    ${s.items.length ? `<div class="found-list">${s.items.map((i) => `<span class="found-chip">${escapeHtml(i.name)}${i.confidence !== "high" ? ` <small>${i.confidence === "low" ? "not sure" : "fairly sure"}</small>` : ""}</span>`).join("")}</div>` : ""}
     ${s.questions.map((q) => questionCard(q, marked.indexOf(q) + 1)).join("")}
     <button class="btn primary block" onclick="commitScan()">Continue to my perishables</button>
     <button class="link" onclick="${s.source === "receipt" ? "snapReceipt()" : s.source === "photo" ? "snapFridge()" : "connectEmail()"}">Start this one again</button>`;
 };
 
+/* --------------------- freshness labels, icons, wording --------------------- */
+
+// Whole days since a purchase date (0 if unknown or in the future)
+function daysSince(dateText) {
+  const t = Date.parse(dateText || "");
+  if (isNaN(t)) return 0;
+  const days = Math.floor((Date.now() - t) / 86400000);
+  return days > 0 ? days : 0;
+}
+
+function shortDate(dateText) {
+  const d = new Date(Date.parse(dateText));
+  if (isNaN(d)) return "";
+  return daysSince(dateText) > 300
+    ? d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/* Days left -> the label and urgency the app shows. For receipts and emails, days left is the food's
+   usual fridge life minus the days since purchase, so an old receipt shows old food as past its life. */
+function freshnessFor(item) {
+  let min, max, bought = "";
+  if (Number.isFinite(item.daysLeftMin)) {
+    min = item.daysLeftMin;
+    max = item.daysLeftMax;
+  } else {
+    const age = daysSince(item.purchaseDate);
+    min = (item.fridgeLifeMin || 0) - age;
+    max = (item.fridgeLifeMax || 0) - age;
+    if (item.purchaseDate && shortDate(item.purchaseDate)) bought = ` (bought ${shortDate(item.purchaseDate)})`;
+  }
+  max = Math.max(max, min);
+  if (max <= 0) return { freshness: `Past its usual fridge life${bought}`, urgency: "urgent", pastLife: true };
+  const range = min <= 0 || min === max ? `${max} day${max === 1 ? "" : "s"}` : `${min} to ${max} days`;
+  const urgency = max <= 2 ? "urgent" : max <= 4 ? "soon" : max <= 10 ? "week" : "long";
+  return { freshness: `Estimated: use within ${range}`, urgency, pastLife: false };
+}
+
+const FOOD_ICONS = [
+  [/tomato/i, "🍅"], [/grape/i, "🍇"], [/straw/i, "🍓"], [/blueberr|berr/i, "🫐"], [/cherr/i, "🍒"],
+  [/apple/i, "🍎"], [/pear/i, "🍐"], [/peach|nectarine/i, "🍑"], [/banana/i, "🍌"], [/lemon|lime/i, "🍋"], [/orange|clementine|mandarin/i, "🍊"],
+  [/watermelon/i, "🍉"], [/melon|cantaloupe/i, "🍈"], [/kiwi/i, "🥝"], [/mango/i, "🥭"], [/pineapple/i, "🍍"], [/avocado/i, "🥑"],
+  [/pea|peas|snow pea|snap pea|edamame|green bean/i, "🫛"], [/broccoli/i, "🥦"], [/carrot/i, "🥕"], [/corn/i, "🌽"], [/cucumber|zucchini/i, "🥒"],
+  [/pepper/i, "🫑"], [/potato/i, "🥔"], [/onion|shallot|leek/i, "🧅"], [/garlic/i, "🧄"], [/mushroom/i, "🍄"], [/eggplant/i, "🍆"],
+  [/spinach|lettuce|kale|greens|chard|arugula|cabbage|herb|cilantro|parsley|basil/i, "🥬"],
+  [/egg/i, "🥚"], [/cheese|feta|mozzarella|cheddar|parmesan/i, "🧀"], [/yog|skyr/i, "🥣"], [/butter/i, "🧈"], [/milk|cream/i, "🥛"],
+  [/chicken|turkey/i, "🍗"], [/bacon/i, "🥓"], [/beef|steak|pork|lamb|sausage|ham|meat/i, "🥩"], [/shrimp|prawn/i, "🍤"], [/fish|salmon|tuna|cod/i, "🐟"],
+  [/bread|bagel|tortilla|bun|roll/i, "🍞"], [/tofu/i, "🧊"], [/leftover|takeout/i, "🥡"],
+];
+function foodIcon(name, category) {
+  const hit = FOOD_ICONS.find(([re]) => re.test(name || ""));
+  return hit ? hit[1] : { Produce: "🥬", Meat: "🍗", Dairy: "🧀", Other: "🍱" }[category] || "🍱";
+}
+
+const SURE = { high: "AI is sure what this is", medium: "AI is fairly sure what this is", low: "AI isn't sure what this is" };
+
 /* Turn what the AI found into inventory items. Items that match a food the recipes know
    (spinach, tomatoes, chicken, feta, yogurt, eggs) get that id, so recipes can use them. */
 function scanItemsToInventory(items, source) {
-  const icons = { Produce: "🥬", Meat: "🍗", Dairy: "🧀", Other: "🍱" };
   const slug = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   const used = new Set();
   return items.map((it, n) => {
@@ -458,16 +522,17 @@ function scanItemsToInventory(items, source) {
     if (used.has(id)) id = `${id}-${n}`;
     used.add(id);
     const category = ["Produce", "Meat", "Dairy"].includes(it.category) ? it.category : "Other";
-    const conf = String(it.confidence || "medium");
+    const fresh = freshnessFor(it);
     return {
       id,
       name: it.name,
-      emoji: known ? known.emoji : icons[category],
+      emoji: foodIcon(it.name, category),
       qty: it.amount || "some",
       category,
-      freshness: it.freshness || "Estimated freshness unknown",
-      urgency: ["urgent", "soon", "week", "long"].includes(it.urgency) ? it.urgency : "week",
-      confidence: `${conf.charAt(0).toUpperCase() + conf.slice(1)} confidence (from ${SOURCE_LABEL[source]})`,
+      freshness: fresh.freshness,
+      urgency: fresh.urgency,
+      pastLife: fresh.pastLife,
+      confidence: `From your ${SOURCE_LABEL[source]} · ${SURE[it.confidence] || SURE.medium}`,
       highRisk: known ? known.highRisk : category === "Meat" || category === "Dairy",
       status: "detected",
       source,
@@ -501,11 +566,16 @@ function commitScan() {
   const unanswered = s.questions.filter((q) => q.status === "open").length;
   log("Inventory", `Saved ${SOURCE_LABEL[s.source]} scan: ${added} added, ${already} already on the list, ${answered.length} from your answers${unanswered ? `, ${unanswered} question(s) left unanswered` : ""}`);
   state.scanSummary = { source: s.source, found: s.items.length, added, already, answered: answered.length, unanswered };
+  const prev = state.sourcesDone[s.source] || { items: 0, scans: 0 };
+  const items = prev.items + added;
+  const scans = prev.scans + 1;
+  const what = { receipt: `receipt${scans === 1 ? "" : "s"}`, photo: `photo${scans === 1 ? "" : "s"}`, email: `Gmail scan${scans === 1 ? "" : "s"}` }[s.source];
+  state.sourcesDone[s.source] = { items, scans, note: `${items} item${items === 1 ? "" : "s"} from ${scans} ${what}. Tap to add more.` };
   state.scan = newScan(null);
-  go("perishables");
+  go("addGroceries");
 }
 
-/* Shown at the top of the perishables screen after a scan */
+/* Shown at the top of the groceries hub after a scan */
 function photoSummary() {
   const s = state.scanSummary;
   if (!s) return "";
@@ -513,6 +583,6 @@ function photoSummary() {
   const parts = [`Your ${SOURCE_LABEL[s.source]} had ${s.found} perishable${s.found === 1 ? "" : "s"}`];
   if (s.answered) parts.push(`plus ${s.answered} you told us about`);
   const tail = [s.added && `${s.added} added below`, s.already && `${s.already} already on your list`].filter(Boolean).join(", ");
-  const left = s.unanswered ? ` ${s.unanswered} question${s.unanswered === 1 ? " was" : "s were"} skipped. Use “Add an item” if you remember what ${s.unanswered === 1 ? "it was" : "they were"}.` : "";
+  const left = s.unanswered ? ` ${s.unanswered} question${s.unanswered === 1 ? " was" : "s were"} skipped. You can add ${s.unanswered === 1 ? "it" : "them"} by hand when you review your list.` : "";
   return `<div class="notice">${icon} ${parts.join(", ")}${tail ? `: ${tail}` : ""}.${left}</div>`;
 }

@@ -24,7 +24,8 @@ const state = {
   inventory: [],             // perishables (produce, meat, dairy) only
   editingItem: null,         // id of the perishable being corrected
   scan: null,                // a receipt, photo or email scan in progress (see scan.js)
-  scanSummary: null,         // what the last scan added, shown on the perishables screen
+  scanSummary: null,         // what the last scan added, shown on the groceries hub
+  sourcesDone: {},           // receipt / photo / email -> { items, note } once that source has been used
   adding: null,              // the "Add an item" form on the perishables screen: { when, name, qty }
 
   // Step 2–4: home screen
@@ -481,25 +482,44 @@ screens.quizTaste = () => {
 };
 
 /* ---- Step 1d: Add groceries (receipt first, fridge photo optional) ---- */
-screens.addGroceries = () => `
+/* "Add your groceries" is a hub: after each receipt, photo or Gmail scan the user comes back here,
+   sees what each source added, and can add another source before reviewing the full list. */
+function sourceCard({ key, icon, title, hint, onclick, badge }) {
+  const done = (state.sourcesDone || {})[key];
+  const status = done ? `<span class="badge done">✓ ${done.items} added</span>` : badge ? `<span class="badge ${badge.cls}">${badge.text}</span>` : "";
+  return `
+  <button class="option-card ${done ? "is-done" : ""}" onclick="${onclick}">
+    <span class="option-icon">${icon}</span>
+    <span><b>${done ? title.again : title.first}</b><small>${done ? done.note : hint}</small></span>
+    ${status}
+  </button>`;
+}
+
+screens.addGroceries = () => {
+  const real = BACKEND.mode === "real";
+  const count = state.inventory.length;
+  return `
   ${setupProgress(3)}
   <h2>Add your groceries</h2>
-  <p class="muted">We track perishables only (produce, meat, dairy). ${SIM.pantryNote}</p>
-  <button class="option-card recommended" onclick="snapReceipt()">
-    <span class="option-icon">🧾</span>
-    <span><b>Snap or upload a receipt</b><small>${BACKEND.mode === "real" ? "AI reads every line. Fastest way to start." : "Fastest way to start. Uses a sample receipt in this prototype."}</small></span>
-    <span class="badge">Recommended</span>
-  </button>
-  <button class="option-card" onclick="connectEmail()">
-    <span class="option-icon">📧</span>
-    <span><b>Connect Gmail</b><small>${BACKEND.mode === "real" ? "Finds grocery receipts and orders from the last 3 weeks. Read-only." : "Simulated: no real account is connected."}</small></span>
-  </button>
-  <button class="option-card optional" onclick="snapFridge()">
-    <span class="option-icon">📷</span>
-    <span><b>Snap your fridge or pantry</b><small>${BACKEND.mode === "real" ? "AI lists the food it can see and asks about anything it can't tell." : "Optional extra, not required."}</small></span>
-    <span class="badge light">Optional</span>
-  </button>
-  ${expectationCard("estimate")}`;
+  <p class="muted">${count
+    ? "Add from as many places as you like. Each one fills in what the others missed."
+    : `We track perishables only (produce, meat, dairy). ${SIM.pantryNote}`}</p>
+  ${photoSummary()}
+  ${sourceCard({ key: "receipt", icon: "🧾", onclick: "snapReceipt()",
+    title: { first: "Snap or upload a receipt", again: "Add another receipt" },
+    hint: real ? "AI reads every line. Fastest way to start." : "Fastest way to start. Uses a sample receipt in this prototype.",
+    badge: count ? null : { cls: "", text: "Recommended" } })}
+  ${sourceCard({ key: "photo", icon: "📷", onclick: "snapFridge()",
+    title: { first: "Snap your fridge or pantry", again: "Add another photo" },
+    hint: real ? "Catches food that isn't on a receipt. AI asks about anything it can't tell." : "Optional extra, not required.",
+    badge: real ? null : { cls: "light", text: "Optional" } })}
+  ${sourceCard({ key: "email", icon: "📧", onclick: "connectEmail()",
+    title: { first: "Connect Gmail", again: "Scan Gmail again" },
+    hint: real ? "Finds grocery receipts and orders from the last 3 weeks. Read-only." : "Simulated: no real account is connected." })}
+  ${count
+    ? `<button class="btn primary block" onclick="go('perishables')">Review my ${count} perishable${count === 1 ? "" : "s"} →</button>`
+    : expectationCard("estimate")}`;
+};
 
 /* ---- Step 1e: Sample receipt → AI reads it → unclear line question ---- */
 screens.receipt = () => {
@@ -570,10 +590,9 @@ screens.perishables = () => {
     <h2>Your perishables</h2>
     <p class="muted">Confirm, correct, or remove anything that's off.</p>
     ${expectationCard("estimate")}
-    ${photoSummary()}
     ${body || `<p class="muted center">No perishables left. Add groceries to get suggestions.</p>`}
     ${addItemForm()}
-    ${BACKEND.mode === "real" ? `<div class="row"><button class="btn ghost" onclick="snapFridge()">📷 Add from a photo</button><button class="btn ghost" onclick="snapReceipt()">🧾 Add a receipt</button></div>` : ""}
+    ${BACKEND.mode === "real" ? `<button class="btn ghost block" onclick="go('addGroceries')">＋ Add from a receipt, photo or Gmail</button>` : ""}
     <div class="note-card">🫙 ${SIM.pantryNote}</div>
     <button class="btn primary block" onclick="savePerishables()">Save and see tonight's recipes</button>`;
 };
@@ -661,7 +680,7 @@ function perishableRow(item) {
       <div class="item-main">
         <div class="item-name">${escapeHtml(item.name)} <span class="qty">· ${escapeHtml(item.qty)}</span></div>
         <span class="fresh-tag ${item.urgency}">${item.freshness}</span>
-        <div class="confidence">${confirmed ? "✓ Confirmed by you" : "AI: " + item.confidence}</div>
+        <div class="confidence">${confirmed ? "✓ Confirmed by you" : item.source ? item.confidence : "AI: " + item.confidence}</div>
       </div>
       <div class="item-actions">
         <button class="icon-btn ${confirmed ? "done" : ""}" title="Confirm" onclick="confirmItem('${item.id}')">✓</button>
